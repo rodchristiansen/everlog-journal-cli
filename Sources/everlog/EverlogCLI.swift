@@ -27,6 +27,7 @@ struct EverlogCLI: ParsableCommand {
             Random.self,
             New.self,
             Append.self,
+            InstallShortcuts.self,
         ],
         defaultSubcommand: nil
     )

@@ -151,30 +151,35 @@ struct Random: ParsableCommand {
     }
 }
 
-// MARK: - Write subcommands (Phase 2 — stubs)
+// MARK: - Write subcommands (Phase 2)
 
 struct New: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "new",
-        abstract: "Create a new entry (Phase 2 — not yet implemented)."
+        abstract: "Create a new entry (file-bridge to Everlog's Create Entry AppIntent via Shortcuts).",
+        discussion: """
+        EXPERIMENTAL. The Shortcuts → AppIntents dispatch path has unresolved \
+        platform constraints — see docs/phase2-blockers.md. This command writes \
+        the body text to ~/.everlog-cli/message.txt and then invokes the helper \
+        Shortcut, which reads the file and calls Everlog's CreateEntry AppIntent. \
+        Journal/date/bookmarked are not yet wired through — entries land in \
+        Everlog's current default journal.
+        """
     )
 
-    @Argument var journal: String
-    @Argument var text: String
+    @Argument(help: "Entry body text. Wrap multi-word text in quotes.")
+    var text: String
 
     func run() throws {
-        throw ValidationError(
-            "Write bridge (Phase 2) not yet implemented. " +
-            "Will wrap `shortcuts run 'Create Entry'` or call AppIntents directly. " +
-            "See PROJECT_PLAN.md."
-        )
+        try Shortcuts.runNewEntry(helper: "Everlog CLI- New Entry", message: text)
+        print("Dispatched to Everlog. Verify with `everlog show <journal>` — if the entry didn't land, see docs/phase2-blockers.md.")
     }
 }
 
 struct Append: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "append",
-        abstract: "Append text to an existing entry (Phase 2 — not yet implemented)."
+        abstract: "Append text to an existing entry (Slice 2 — not yet implemented)."
     )
 
     @Argument var identifier: String
@@ -182,8 +187,49 @@ struct Append: ParsableCommand {
 
     func run() throws {
         throw ValidationError(
-            "Write bridge (Phase 2) not yet implemented. " +
-            "Will wrap `shortcuts run 'Append Text to Entry'`. See PROJECT_PLAN.md."
+            "`append` lands in Phase 2 Slice 2. Use `everlog new` for now."
         )
+    }
+}
+
+struct InstallShortcuts: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "install-shortcuts",
+        abstract: "Install the helper Shortcuts that bridge the CLI to Everlog's AppIntents."
+    )
+
+    @Flag(name: .long, help: "List installed/missing helpers without installing.")
+    var check = false
+
+    func run() throws {
+        try Shortcuts.ensureBinaryAvailable()
+        let helpers = Shortcuts.bundledHelpers()
+
+        if helpers.isEmpty {
+            print("(no bundled helper shortcuts found — this build may be missing Resources)")
+            return
+        }
+
+        for helper in helpers {
+            let displayName = helper.deletingPathExtension().lastPathComponent
+            let installed = Shortcuts.isInstalled(displayName)
+            let mark = installed ? "✓" : "·"
+            print("\(mark) \(displayName)")
+            if check { continue }
+            if installed {
+                continue
+            }
+            // Open the .shortcut in Shortcuts.app for the user to confirm import.
+            let task = Process()
+            task.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+            task.arguments = [helper.path]
+            try task.run()
+            task.waitUntilExit()
+            print("  → opened in Shortcuts.app; confirm 'Add Shortcut' to install.")
+        }
+
+        if !check {
+            print("\nWhen the import dialogs are done, run `everlog install-shortcuts --check`.")
+        }
     }
 }
