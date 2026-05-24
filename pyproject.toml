@@ -1,0 +1,52 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "everlog-journal-cli"
+version = "0.1.0"
+description = "Unofficial command-line interface for the Everlog (Hummingbird) journaling app"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [{ name = "Rod Christiansen", email = "rod@focused.systems" }]
+keywords = ["everlog", "hummingbird", "journal", "journaling", "cli", "macos"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: MacOS :: MacOS X",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Office/Business :: News/Diary",
+    "Topic :: Utilities",
+]
+dependencies = [
+    "click >= 8.1",
+    "rich >= 13.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest >= 7.0",
+    "ruff >= 0.4",
+]
+
+[project.scripts]
+everlog = "everlog.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/rodchristiansen/everlog-journal-cli"
+Issues = "https://github.com/rodchristiansen/everlog-journal-cli/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/everlog"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
