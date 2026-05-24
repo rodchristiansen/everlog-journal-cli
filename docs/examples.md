@@ -36,13 +36,11 @@ everlog search "Project Atlas" --journal Mindset 50
 
 ## Reading
 
-Once you have an identifier (from `show`/`search`/`on-this-day`), read the full entry:
+Once you have an identifier (from `show` / `search` / `on-this-day`), read the full entry. UUID prefix is enough — the CLI matches on the full identifier:
 
 ```bash
 everlog read 1BD3C6DF
 ```
-
-(Identifier prefix is enough — the CLI matches on the full UUID column.)
 
 ## Piping into other tools
 
@@ -50,13 +48,13 @@ JSON output everywhere:
 
 ```bash
 everlog journals --json | jq '.[] | select(.count > 100)'
-everlog tags --json | jq '.[].name' -r
+everlog tags --json | jq -r '.[].name'
 everlog search "win" --tag wins --json | jq -r '.[].preview'
 ```
 
 ## Counting
 
-Total entries across all journals (using `jq` math):
+Total entries across all journals (with `jq` math):
 
 ```bash
 everlog journals --json | jq '[.[].count] | add'
@@ -78,7 +76,7 @@ everlog show Mindset 30 --json | \
   llm "summarize what I've been thinking about lately"
 ```
 
-Or for retrieval-augmented generation, build a vector index over journal text:
+Or for retrieval-augmented generation, dump entries for an embedding pipeline:
 
 ```bash
 everlog show Mindset 5000 --json > /tmp/mindset.json
@@ -90,10 +88,10 @@ everlog show Mindset 5000 --json > /tmp/mindset.json
 Daily reflection digest at 8am:
 
 ```cron
-0 8 * * * /usr/local/bin/everlog on-this-day | mail -s "On this day from your journal" rod@focused.systems
+0 8 * * * /usr/local/bin/everlog on-this-day | mail -s "On this day from your journal" you@example.com
 ```
 
-## Quick check that everything's working
+## Quick verification that the install works
 
 ```bash
 everlog journals          # should list your journals
@@ -101,7 +99,7 @@ everlog tags              # should list your tags
 everlog show Mindset 3    # if Mindset exists, recent entries
 ```
 
-If `everlog journals` returns an empty list, either Everlog isn't installed or iCloud hasn't synced yet. The CLI looks for the database at:
+If `everlog journals` returns nothing, either Everlog isn't installed or iCloud hasn't synced yet. The CLI looks for the database at:
 
 ```
 ~/Library/Group Containers/group.hummingbird/Hummingbird.sqlite

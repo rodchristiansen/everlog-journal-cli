@@ -1,18 +1,9 @@
-__pycache__/
-*.py[cod]
-*$py.class
-*.egg-info/
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-.venv/
-venv/
-dist/
-build/
-.coverage
-htmlcov/
+.build/
+.swiftpm/
+*.xcodeproj/
+Package.resolved
 .DS_Store
+*.bak
 
 # transient
 /tmp/
-*.bak

@@ -2,7 +2,7 @@
 
 ## Storage layout
 
-Everlog (Hummingbird) stores all data in the macOS App Group container shared across the main app, widget, and share extension. Verified locations:
+Everlog (Hummingbird) stores all data in the macOS App Group container shared across the main app, widget, share extension, and Intents host. Verified locations:
 
 ```
 ~/Library/Group Containers/group.hummingbird/
@@ -31,27 +31,41 @@ Everlog (Hummingbird) stores all data in the macOS App Group container shared ac
 
 The CLI only touches the **Group Containers** path. Per-target containers are app-internal and we don't read or write them.
 
+`EVERLOG_GROUP_CONTAINER` and `EVERLOG_DB` env vars override the default paths for testing.
+
 ## Why copy-before-query
 
 SQLite has aggressive WAL behavior under CoreData's settings. Reading the live file while Everlog or its widget is writing produces inconsistent reads — sometimes empty result sets, sometimes "database is locked" errors.
 
-The pattern (taken from the `bin/sc-dump-all` Shortcuts tool in `~/Developer/Personal`):
+The pattern (port of the same approach in Rod's `bin/sc-dump-all` for Shortcuts):
 
-```python
-shutil.copy2(SRC / "Hummingbird.sqlite", "/tmp/everlog-ro.sqlite")
-shutil.copy2(SRC / "Hummingbird.sqlite-wal", "/tmp/everlog-ro.sqlite-wal")
-shutil.copy2(SRC / "Hummingbird.sqlite-shm", "/tmp/everlog-ro.sqlite-shm")
+```swift
+let src = URL(...).appendingPathComponent("Hummingbird.sqlite")
+let dst = URL(fileURLWithPath: "/tmp/everlog-ro.sqlite")
+try FileManager.default.copyItem(at: src, to: dst)
+// WAL/SHM sidecars too
+for ext in ["-wal", "-shm"] {
+    try? FileManager.default.copyItem(
+        at: URL(fileURLWithPath: src.path + ext),
+        to: URL(fileURLWithPath: dst.path + ext)
+    )
+}
+try? FileManager.default.setAttributes(
+    [.posixPermissions: 0o600],
+    ofItemAtPath: dst.path
+)
+// Then open with SQLITE_OPEN_READONLY
 ```
 
-The WAL/SHM sidecars are copied alongside so SQLite reconstructs a coherent point-in-time view. Then queries open the `/tmp` copy read-only.
+The WAL/SHM sidecars are copied alongside so SQLite reconstructs a coherent point-in-time view. The `/tmp` copy is `chmod 600` because entries can be sensitive.
 
 ## Schema overview (CoreData-generated)
 
-Hummingbird's CoreData store uses the standard `Z<ENTITY>` naming. Key tables documented in `docs/schema.md`. Highlights:
+Hummingbird's CoreData store uses the standard `Z<ENTITY>` naming. Key tables documented in [docs/schema.md](docs/schema.md). Highlights:
 
 | Table | Role |
 |---|---|
-| `ZENTRY` | One row per journal entry. `ZTEXT` is the markdown body. `ZDATE` is a Cocoa timestamp (add 978307200 for Unix epoch). |
+| `ZENTRY` | One row per journal entry. `ZTEXT` is the markdown body. `ZDATE` is a Cocoa timestamp (same units as Swift's `Date.timeIntervalSinceReferenceDate`). |
 | `ZJOURNAL` | The user's journals. `ZNAME` is the display name. |
 | `ZTAG` | Tags. `ZTITLE` (not `ZNAME`) is the tag string. |
 | `Z_17TAGS` | Entry ↔ tag join. `Z_17ENTRIES1` = entry PK, `Z_22TAGS` = tag PK. |
@@ -67,31 +81,35 @@ Entry text is markdown with inline attachment references:
 ![attachment](1BD3C6DF-0325-4AB5-817F-DDF5ED181E33)
 ```
 
-The UUID resolves against `ZATTACHMENT.ZIDENTIFIER` (or similar — needs verification).
+The UUID resolves against `ZATTACHMENT.ZIDENTIFIER` (or similar — needs verification in Phase 2).
 
 ## Cocoa timestamps
 
-`ZDATE`, `ZDATECREATED`, `ZDATEMODIFIED`, `ZDATETRASHED`, `ZSORTDATE`, `ZTEXTMODIFIEDDATE` are all stored as seconds-since-2001-01-01 (Cocoa epoch). Convert with:
+`ZDATE`, `ZDATECREATED`, `ZDATEMODIFIED`, `ZDATETRASHED`, `ZSORTDATE`, `ZTEXTMODIFIEDDATE` are seconds-since-2001-01-01 (Cocoa epoch).
 
-```python
-unix_ts = cocoa_ts + 978307200
+**Swift bonus**: `Foundation.Date(timeIntervalSinceReferenceDate:)` uses exactly this epoch — no offset arithmetic needed. The Python port had to add 978307200 to convert; in Swift the value goes straight in.
+
+For SQLite's `strftime` (used in `on-this-day` query), we still need to convert to Unix epoch:
+
+```sql
+strftime('%m-%d', datetime(e.ZDATE + 978307200, 'unixepoch')) = ?1
 ```
 
 ## Trashed entries
 
-`ZISTRASHED = 1` indicates a trashed entry. The CLI filters these out by default. Pass `--include-trashed` (Phase 3+) to include them.
+`ZISTRASHED = 1` indicates a trashed entry. All read queries filter with `ZISTRASHED = 0`. Phase 3+ adds `--include-trashed` for inspection.
 
 ## Encrypted columns
 
-Some columns suffixed `ZENCRYPTED*` (e.g. `ZENCRYPTEDLATITUDE`, `ZENCRYPTEDLONGITUDE`, `ZENCRYPTEDNAME`) exist alongside their plaintext counterparts. These appear to be filled for journals/entries marked as encrypted. The plaintext versions remain populated for non-encrypted entries.
+Some columns are suffixed `ZENCRYPTED*` (e.g. `ZENCRYPTEDLATITUDE`, `ZENCRYPTEDLONGITUDE`, `ZENCRYPTEDNAME`) alongside their plaintext counterparts. These appear to be filled for entries/journals marked as encrypted. The plaintext versions remain populated for non-encrypted entries.
 
-**Handling of encrypted entries is an open question** (see PROJECT_PLAN.md Open design questions). For Phase 1, the CLI reads plaintext columns; encrypted entries may appear empty in results until we implement decryption.
+**Handling of encrypted entries is an open question** (see PROJECT_PLAN.md). For Phase 1 the CLI reads plaintext columns; encrypted entries may appear empty until we implement decryption (likely impossible from outside the app).
 
-## Write side (Phase 2)
+## Write side (Phase 2 → Phase 3)
 
-Everlog's Shortcuts actions provide the only safe write path. Direct SQLite mutations would (a) bypass Wonderbit's CloudKit sync logic and (b) risk CoreData consistency rules.
+Everlog's Shortcuts actions are the supported write path. Direct SQLite mutations would (a) bypass Wonderbit's CloudKit sync logic and (b) risk CoreData consistency rules.
 
-Observed Shortcuts actions (in Shortcuts.app's catalog when searching "Everlog" or "Hummingbird"):
+Observed Shortcuts actions in Shortcuts.app (search for "Everlog" or "Journal"):
 
 | Action | Use |
 |---|---|
@@ -110,60 +128,87 @@ Observed Shortcuts actions (in Shortcuts.app's catalog when searching "Everlog" 
 | `Set Everlog Focus Filter` | Restrict app view. |
 | `Add Comment to Entry` | Add a comment thread. |
 | `Append Text to Entry` | Append text to an existing entry. |
-| `Write Entry` | (Duplicate of `Create Entry`? — needs decode.) |
+| `Write Entry` | (Possibly duplicate of `Create Entry` — needs decode.) |
 | `Record Audio` | Record audio attachment. |
 
-These are AppIntent-backed (`co.wonderbit.Hummingbird.*Intent` action identifiers). The CLI wraps them via:
+These are AppIntent-backed (`co.wonderbit.Hummingbird.*Intent` action identifiers).
 
-```bash
-shortcuts run "Create Entry" --input <json>
+### Phase 2: ship helper shortcuts that wrap Everlog's actions
+
+To avoid building complete plists from CLI code on every write call, the CLI bundles pre-authored helper Shortcuts that take JSON input and call the underlying Everlog actions:
+
+| Helper | Wraps | Input shape |
+|---|---|---|
+| `Everlog CLI: New Entry` | Create Entry | `{"journal": "Mindset", "text": "...", "tags": ["wins"], "date": "...", "lat": ..., "lng": ...}` |
+| `Everlog CLI: Append` | Append Text to Entry | `{"identifier": "ABCD-...", "text": "..."}` |
+| `Everlog CLI: Find` | Find Entries | `{"journal": "Mindset", "tag": "wins", "limit": 20}` → identifiers |
+| `Everlog CLI: Bookmark` | Set Bookmark of Entry | `{"identifier": "ABCD-...", "on": true}` |
+
+First-run `everlog install-shortcuts` writes the bundled `.shortcut` files to a temp path and opens them, prompting the user to import.
+
+### Phase 3: skip the helper layer with direct AppIntents
+
+Apple's `AppIntents` framework allows a third-party process to invoke another app's `AppIntent` types, given:
+
+1. The target intent is declared as an `AppIntent` (not `OpenIntent`, which requires foreground UI).
+2. The calling process has the appropriate entitlements (likely something like `com.apple.developer.intents` or per-bundle-id permission).
+3. The user has granted the relevant Privacy permission via a TCC prompt the first time.
+
+If feasible (Wonderbit's intents may be `OpenIntent`-only, in which case we stay on the shortcuts CLI), Phase 3 replaces the helper-shortcut subprocess with direct framework calls:
+
+```swift
+import AppIntents
+
+let intent = AnyIntent(identifier: "co.wonderbit.Hummingbird.CreateEntryIntent")
+intent["text"] = "..."
+intent["journal"] = "Mindset"
+let result = try await intent.perform()
 ```
 
-The CLI ships a set of pre-authored wrapper Shortcuts (`Everlog CLI: New Entry`, etc.) that accept JSON input and call the underlying Everlog actions. First-run install drops these into the user's Shortcuts library.
+(Exact API TBD — the dynamic AppIntent invocation API is sparsely documented.)
 
 ## Package layout
 
 ```
-src/everlog/
-├── __init__.py
-├── __main__.py        enables `python -m everlog`
-├── cli.py             click commands, top-level routing
-├── db.py              SQLite reader: open, query, return dataclasses
-├── shortcuts.py       Phase 2: wraps `shortcuts run`, manages helper-shortcut install
-├── models.py          dataclasses: Entry, Journal, Tag, Attachment
-├── output.py          formatters: human (text + colors) + JSON
-└── shortcuts_bundle/  pre-authored .shortcut files for the write bridge (Phase 2)
-```
+Sources/everlog/
+├── EverlogCLI.swift      @main entry, top-level command, version, subcommand list
+├── Commands.swift        each subcommand as a ParsableCommand struct
+├── DB.swift              SQLite snapshot + open + per-query functions
+├── Models.swift          Codable structs: Journal, Tag, Entry, Entry.Location
+└── Output.swift          plain + JSON formatters, ANSI helpers
 
-Tests in `tests/`. Schema docs in `docs/schema.md`. Examples in `docs/examples.md`.
+Tests/everlogTests/
+└── DBTests.swift         integration-style; skips if Everlog not installed
+
+Package.swift             SwiftPM: macOS 13+, depends on swift-argument-parser,
+                          links system sqlite3 via linkedLibrary
+```
 
 ## Compatibility matrix (to be verified)
 
 | Everlog version | Hummingbird.sqlite schema version | CLI tested? |
 |---|---|---|
-| 2025.x (production at scaffold time) | (unknown — needs `Z_METADATA.Z_VERSION` probe) | ✅ |
+| 2025.x (scaffold-time production DB) | `Z_METADATA.Z_VERSION` = TBD (needs probe) | ✅ |
 | 2024.x | TBD | ⬜ |
 | 2023.x | TBD | ⬜ |
 
-The CLI should refuse to run against an untested schema version with a clear error pointing at this matrix. Issue template for adding new versions: "report your `Z_VERSION` + your Everlog version + any errors."
+The CLI should refuse to run against an untested schema version with a clear error. Issue template for adding new versions: "report `Z_VERSION`, your Everlog version, any errors observed."
 
 ## Dependencies
 
 Minimal:
 
-- Python 3.10+ (stdlib `sqlite3`, `pathlib`, `datetime`, `json`, `shutil`)
-- `click` for CLI parsing
-- `rich` for terminal formatting (optional — fallback to plain text)
+- **System Swift** (5.10+, ships with macOS via Xcode Command Line Tools)
+- **`apple/swift-argument-parser`** — only third-party dependency, first-party Apple
+- **System `sqlite3`** — linked via `Package.swift`'s `.linkedLibrary("sqlite3")`
 
-Phase 2+ adds:
-
-- `pyyaml` for config files
-- Possibly a wrapper around `shortcuts` CLI
-
-No CoreData library dependency — we read raw SQLite.
+No language-runtime dependency for end users (vs Python which would require `python3` + `pip install`). Single signed binary distribution.
 
 ## Security & privacy
 
-- The CLI reads journal entries from local storage. Entries can contain sensitive personal content. Never log entry text to stdout *unless the user explicitly requested it via the `read` subcommand*. Never send entries over the network without explicit opt-in.
-- `--exec` in Phase 6's `watch` mode is a foot-gun — entry text is piped to user-supplied commands. Document the trust model clearly.
-- The `/tmp/` copies are world-readable on default macOS settings. We should `chmod 600` them after copy. (TODO.)
+- The CLI reads journal entries from local storage. Entries can contain sensitive personal content.
+- Never log entry text to stdout *unless the user explicitly requested it via the `read` subcommand* (or `--json` was requested as an explicit opt-in).
+- Never send entries over the network without explicit opt-in.
+- The `/tmp/` snapshot is `chmod 600` after copy so only the current user can read it. Don't store the snapshot anywhere persistent.
+- `--exec` in Phase 7's `watch` mode is a foot-gun — entry text is piped to user-supplied commands. Document the trust model clearly.
+- The signed binary in Phase 6 will use hardened runtime + Developer ID, and be notarized.
