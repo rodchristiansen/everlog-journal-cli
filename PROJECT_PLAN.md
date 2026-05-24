@@ -64,16 +64,15 @@ Implementation:
 - Each write call serializes args to JSON and runs `shortcuts run "<helper>" --input <json>`.
 - Helper Shortcuts call Everlog's underlying AppIntents (`co.wonderbit.Hummingbird.CreateEntryIntent`, etc.).
 
-### Phase 3 — Direct AppIntents (skip the shortcuts CLI)
+### Phase 3 — Make the write path feel native
 
-Apple's AppIntents framework allows third-party processes to invoke `AppIntent` types declared by other apps, given the right entitlements and Info.plist usage descriptions. Once we figure out the entitlement story for invoking `co.wonderbit.Hummingbird.CreateEntryIntent` from our binary:
+The original Phase 3 plan was "skip the `shortcuts` CLI by calling Wonderbit's `AppIntent` types directly." Empirical inspection of `Everlog.app` (see [docs/phase3-research.md](docs/phase3-research.md)) confirms that path is blocked at the macOS platform level: Apple's public API has no cross-process AppIntents invocation entry point, and ExtensionKit doesn't expose a way to connect to `EverlogIntents.appex` directly. The good news is that Wonderbit's write intents (`CreateEntryIntent`, `AddCommentIntent`, `AddToEntryAppIntent`, `BookmarkEntryAppIntent`, `TrashEntryAppIntent`) are all background-capable (`openAppWhenRun=false`), so they dispatch through the intents extension without bringing the app forward.
 
-- Replace `shortcuts run` subprocess with direct framework call.
-- Faster (no Shortcuts.app spin-up).
-- Better error handling (typed Swift errors vs parsing shortcuts CLI exit codes).
-- Eliminates the helper-shortcut install step.
+Revised scope:
 
-Risks: Apple may not allow third-party processes to fire arbitrary AppIntents without specific entitlements. Wonderbit's intents may be marked as `OpenIntent` (requires foreground app) rather than `AppIntent` (background OK). Will need empirical verification.
+- **3a — Optimize the `shortcuts run` path.** Warm-start helper shortcuts, batch multi-write operations through a single dispatcher shortcut, fire-and-forget for callers that don't need a return value.
+- **3b — Register `everlog` itself as an AppIntents provider.** Declare our own `AppIntent` types so Shortcuts/Siri/Spotlight can compose our CLI alongside Everlog's intents.
+- **3c — Advocate to Wonderbit for write-capable `everlog://` URLs** (e.g. `everlog://new?journal=X&text=...`). Independent of our roadmap; would let any tool skip the Shortcuts dispatcher.
 
 ### Phase 4 — Statistics & date filtering
 
