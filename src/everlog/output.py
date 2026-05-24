@@ -9,15 +9,17 @@ try:
     from rich.console import Console
     from rich.table import Table
 
-    _console: Console | None = Console()
+    _console = Console()
+    _HAS_RICH = True
 except ImportError:
-    Console = None  # type: ignore[assignment]
-    Table = None  # type: ignore[assignment]
+    Console = None  # type: ignore[assignment, misc]
+    Table = None  # type: ignore[assignment, misc]
     _console = None
+    _HAS_RICH = False
 
 
 def _has_rich() -> bool:
-    return _console is not None and Table is not None
+    return _HAS_RICH
 
 
 def emit(data: Any, *, kind: str, as_json: bool) -> None:
