@@ -176,6 +176,53 @@ struct New: ParsableCommand {
     }
 }
 
+struct ExportCmd: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "export",
+        abstract: "Export entries to Markdown (one file per entry) or JSON (single file).",
+        discussion: """
+        Markdown output is organized as <to>/<journal>/<YYYY-MM-DDTHHMMSS>-<shortid>.md \
+        with YAML frontmatter (identifier, date, journal, tags, location, bookmarked, \
+        wordcount) followed by the entry body. JSON output is a single file containing \
+        the full Entry array (use --to - to stream to stdout).
+
+        Attachments and Day One-compatible format are not yet supported.
+        """
+    )
+
+    @Option(name: .long, help: "Output format: markdown or json.")
+    var format: ExportFormat = .markdown
+
+    @Option(name: .long, help: "Output destination. Directory for markdown, file path (or - for stdout) for json.")
+    var to: String
+
+    @Option(name: .long, help: "Restrict to one journal.")
+    var journal: String?
+
+    @Flag(name: .long, help: "Include trashed entries.")
+    var includeTrashed = false
+
+    func run() throws {
+        let db = try DB.open()
+        defer { DB.close(db) }
+        let entries = try DB.allEntries(db, journal: journal, includingTrashed: includeTrashed)
+
+        let written: Int
+        switch format {
+        case .markdown:
+            let url = URL(fileURLWithPath: (to as NSString).expandingTildeInPath)
+            written = try Export.writeMarkdown(entries, to: url)
+            FileHandle.standardError.write(Data("Wrote \(written) entries to \(url.path)\n".utf8))
+        case .json:
+            let path = (to as NSString).expandingTildeInPath
+            written = try Export.writeJSON(entries, toPath: path)
+            if path != "-" {
+                FileHandle.standardError.write(Data("Wrote \(written) entries to \(path)\n".utf8))
+            }
+        }
+    }
+}
+
 struct Append: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "append",

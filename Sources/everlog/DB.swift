@@ -305,6 +305,77 @@ extension DB {
         return collectEntries(stmt)
     }
 
+    static func allEntries(
+        _ db: OpaquePointer,
+        journal: String? = nil,
+        includingTrashed: Bool = false
+    ) throws -> [Entry] {
+        var sql = """
+        SELECT e.ZIDENTIFIER, e.ZDATE, j.ZNAME, e.ZWORDCOUNT, e.ZTEXT,
+               e.ZLATITUDE, e.ZLONGITUDE, e.ZISBOOKMARKED, e.Z_PK
+        FROM ZENTRY e
+        JOIN ZJOURNAL j ON j.Z_PK = e.ZJOURNAL
+        """
+        var conds: [String] = []
+        if !includingTrashed { conds.append("e.ZISTRASHED = 0") }
+        if journal != nil { conds.append("j.ZNAME = ?1") }
+        if !conds.isEmpty { sql += " WHERE " + conds.joined(separator: " AND ") }
+        sql += " ORDER BY e.ZDATE ASC"
+
+        let stmt = try Statement(db, sql)
+        if let j = journal { stmt.bind(1, j) }
+
+        var entries: [Entry] = []
+        var pks: [String: Int64] = [:]
+        while stmt.step() {
+            let ident = stmt.text(0) ?? ""
+            let lat = stmt.isNull(5) ? nil : stmt.double(5)
+            let lng = stmt.isNull(6) ? nil : stmt.double(6)
+            let loc: Entry.Location? = (lat != nil && lng != nil) ? .init(lat: lat!, lng: lng!) : nil
+            entries.append(Entry(
+                identifier: ident,
+                date: cocoaToISO(stmt.double(1)),
+                journal: stmt.text(2) ?? "",
+                wordcount: Int(stmt.int(3)),
+                preview: nil,
+                text: stmt.text(4),
+                tags: [],
+                location: loc,
+                bookmarked: stmt.int(7) == 1
+            ))
+            pks[ident] = stmt.int(8)
+        }
+
+        // Bulk-load tags per entry (one query, then group)
+        let tagSql = """
+        SELECT e.ZIDENTIFIER, t.ZTITLE
+        FROM Z_17TAGS j
+        JOIN ZTAG t ON t.Z_PK = j.Z_22TAGS
+        JOIN ZENTRY e ON e.Z_PK = j.Z_17ENTRIES1
+        """
+        let tagStmt = try Statement(db, tagSql)
+        var tagsByEntry: [String: [String]] = [:]
+        while tagStmt.step() {
+            guard let id = tagStmt.text(0), let tag = tagStmt.text(1) else { continue }
+            tagsByEntry[id, default: []].append(tag)
+        }
+
+        // Re-emit with tags filled in (Entry is a struct, so build new array)
+        return entries.map { e in
+            Entry(
+                identifier: e.identifier,
+                date: e.date,
+                journal: e.journal,
+                wordcount: e.wordcount,
+                preview: e.preview,
+                text: e.text,
+                tags: (tagsByEntry[e.identifier] ?? []).sorted(),
+                location: e.location,
+                bookmarked: e.bookmarked
+            )
+        }
+    }
+
     static func randomEntry(_ db: OpaquePointer, journal: String?) throws -> Entry? {
         var sql = """
         SELECT e.ZIDENTIFIER, e.ZDATE, j.ZNAME, e.ZWORDCOUNT, substr(e.ZTEXT, 1, 400)
