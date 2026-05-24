@@ -9,11 +9,15 @@ try:
     from rich.console import Console
     from rich.table import Table
 
-    _HAS_RICH = True
-    _console = Console()
+    _console: Console | None = Console()
 except ImportError:
-    _HAS_RICH = False
+    Console = None  # type: ignore[assignment]
+    Table = None  # type: ignore[assignment]
     _console = None
+
+
+def _has_rich() -> bool:
+    return _console is not None and Table is not None
 
 
 def emit(data: Any, *, kind: str, as_json: bool) -> None:
@@ -36,7 +40,8 @@ def emit(data: Any, *, kind: str, as_json: bool) -> None:
 
 
 def _print_journals(rows: list[dict]) -> None:
-    if _HAS_RICH:
+    if _has_rich():
+        assert _console is not None and Table is not None
         table = Table(show_header=True, header_style="bold")
         table.add_column("Journal")
         table.add_column("Entries", justify="right")
@@ -49,7 +54,8 @@ def _print_journals(rows: list[dict]) -> None:
 
 
 def _print_tags(rows: list[dict]) -> None:
-    if _HAS_RICH:
+    if _has_rich():
+        assert _console is not None and Table is not None
         table = Table(show_header=True, header_style="bold")
         table.add_column("Tag")
         table.add_column("Uses", justify="right")
@@ -64,7 +70,8 @@ def _print_tags(rows: list[dict]) -> None:
 def _print_entries(rows: list[dict]) -> None:
     for r in rows:
         wc = f" · {r['wordcount']}w" if r.get("wordcount") else ""
-        if _HAS_RICH:
+        if _has_rich():
+            assert _console is not None
             _console.print(
                 f"\n[bold cyan]{r['date'][:10]}[/]  "
                 f"[green]{r['journal']}[/]{wc}  "
@@ -77,7 +84,8 @@ def _print_entries(rows: list[dict]) -> None:
 
 
 def _print_entry(entry: dict) -> None:
-    if _HAS_RICH:
+    if _has_rich():
+        assert _console is not None
         _console.rule(entry["date"][:19])
     else:
         print(f"=== {entry['date'][:19]} ===")

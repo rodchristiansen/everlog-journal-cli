@@ -9,7 +9,7 @@ from __future__ import annotations
 import os
 import shutil
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 # Cocoa reference date offset to Unix epoch (seconds from 2001-01-01 to 1970-01-01)
@@ -57,7 +57,9 @@ def connect() -> sqlite3.Connection:
 def cocoa_to_iso(ts: float | None) -> str | None:
     if ts is None:
         return None
-    return datetime.utcfromtimestamp(ts + COCOA_EPOCH).isoformat() + "Z"
+    dt = datetime.fromtimestamp(ts + COCOA_EPOCH, tz=timezone.utc)
+    # Match the prior "...Z" suffix for stable consumer output
+    return dt.replace(tzinfo=None).isoformat() + "Z"
 
 
 # ---- queries ----------------------------------------------------------------
@@ -183,7 +185,7 @@ def read_entry(conn: sqlite3.Connection, identifier: str) -> dict | None:
 
 
 def on_this_day(conn: sqlite3.Connection) -> list[dict]:
-    today_mmdd = datetime.utcnow().strftime("%m-%d")
+    today_mmdd = datetime.now(timezone.utc).strftime("%m-%d")
     rows = conn.execute(
         """
         SELECT e.ZIDENTIFIER AS identifier,
