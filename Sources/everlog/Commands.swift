@@ -151,6 +151,88 @@ struct Random: ParsableCommand {
     }
 }
 
+struct Watch: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        abstract: "Tail new entries as they're added to Everlog. Emits NDJSON to stdout.",
+        discussion: """
+        Polls the live Everlog SQLite store at a configurable interval and emits \
+        one JSON line per new entry (same Entry shape as `show --json`). Use \
+        --exec to run a shell command per entry — the entry identifier is passed \
+        as $1.
+
+        By default the first tick emits the full backfill of existing entries \
+        oldest-first. Use --from-now to skip the backfill and only emit entries \
+        created after the watcher starts.
+
+        Stop with Ctrl+C.
+        """
+    )
+
+    @Option(name: .long, help: "Poll interval in seconds (default 2).")
+    var pollInterval: Double = 2.0
+
+    @Option(name: .long, help: "Restrict to one journal.")
+    var journal: String?
+
+    @Flag(name: .long, help: "Skip historical backfill — only emit new entries created after watch starts.")
+    var fromNow = false
+
+    @Option(name: .long, help: "Shell command to run per new entry. The entry identifier is passed as $1.")
+    var exec: String?
+
+    func run() throws {
+        let db = try DB.openLive()
+        defer { DB.close(db) }
+
+        var lastPK: Int64 = 0
+        if fromNow {
+            lastPK = try DB.maxEntryPK(db)
+        }
+
+        let banner: String = {
+            var parts = ["watching everlog"]
+            if let j = journal { parts.append("(journal=\(j))") }
+            if fromNow { parts.append("(from-now)") } else { parts.append("(backfill + tail)") }
+            parts.append("— Ctrl+C to stop")
+            return parts.joined(separator: " ") + "\n"
+        }()
+        FileHandle.standardError.write(Data(banner.utf8))
+
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+
+        while true {
+            let pairs = try DB.entriesAfterWithPKs(db, pk: lastPK, journal: journal)
+            for (entry, pk) in pairs {
+                if let data = try? encoder.encode(entry),
+                   let line = String(data: data, encoding: .utf8) {
+                    print(line)
+                    fflush(stdout)
+                }
+                if let cmd = exec {
+                    runExec(cmd, identifier: entry.identifier)
+                }
+                if pk > lastPK { lastPK = pk }
+            }
+            if pollInterval > 0 {
+                Thread.sleep(forTimeInterval: pollInterval)
+            }
+        }
+    }
+
+    private func runExec(_ cmd: String, identifier: String) {
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/bin/sh")
+        task.arguments = ["-c", cmd, "_", identifier]
+        do {
+            try task.run()
+            task.waitUntilExit()
+        } catch {
+            FileHandle.standardError.write(Data("exec failed: \(error.localizedDescription)\n".utf8))
+        }
+    }
+}
+
 // MARK: - Write subcommands (Phase 2)
 
 struct New: ParsableCommand {

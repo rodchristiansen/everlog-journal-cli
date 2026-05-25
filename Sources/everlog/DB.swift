@@ -84,6 +84,24 @@ enum DB {
     static func close(_ db: OpaquePointer) {
         sqlite3_close(db)
     }
+
+    /// Open the live database directly (no snapshot copy). Used by `everlog watch`
+    /// for low-overhead polling. SQLite WAL mode lets us read concurrently while
+    /// Everlog writes — each query starts a fresh read transaction.
+    static func openLive() throws -> OpaquePointer {
+        let src = groupContainer.appendingPathComponent("Hummingbird.sqlite")
+        guard FileManager.default.fileExists(atPath: src.path) else {
+            throw DBError.databaseMissing(src)
+        }
+        var db: OpaquePointer?
+        let flags = SQLITE_OPEN_READONLY
+        guard sqlite3_open_v2(src.path, &db, flags, nil) == SQLITE_OK, let handle = db else {
+            let msg = db.flatMap { String(cString: sqlite3_errmsg($0)) } ?? "unknown"
+            sqlite3_close(db)
+            throw DBError.openFailed(msg)
+        }
+        return handle
+    }
 }
 
 // MARK: - Statement helper
@@ -419,6 +437,57 @@ extension DB {
                 location: nil,
                 bookmarked: false
             ))
+        }
+        return out
+    }
+
+    // MARK: - Watch support
+
+    static func maxEntryPK(_ db: OpaquePointer) throws -> Int64 {
+        let stmt = try Statement(db, "SELECT COALESCE(MAX(Z_PK), 0) FROM ZENTRY WHERE ZISTRASHED = 0")
+        guard stmt.step() else { return 0 }
+        return stmt.int(0)
+    }
+
+    /// Returns entries with `Z_PK > pk`, oldest-first, suitable for tailing. Each tuple
+    /// pairs the user-facing Entry with its internal Z_PK so the caller can advance
+    /// `lastSeen` across polls.
+    static func entriesAfterWithPKs(
+        _ db: OpaquePointer,
+        pk: Int64,
+        journal: String? = nil
+    ) throws -> [(Entry, Int64)] {
+        var sql = """
+        SELECT e.ZIDENTIFIER, e.ZDATE, j.ZNAME, e.ZWORDCOUNT, e.ZTEXT,
+               e.ZLATITUDE, e.ZLONGITUDE, e.ZISBOOKMARKED, e.Z_PK
+        FROM ZENTRY e
+        JOIN ZJOURNAL j ON j.Z_PK = e.ZJOURNAL
+        WHERE e.ZISTRASHED = 0 AND e.Z_PK > ?1
+        """
+        if journal != nil { sql += " AND j.ZNAME = ?2" }
+        sql += " ORDER BY e.Z_PK ASC"
+
+        let stmt = try Statement(db, sql).bind(1, Int(pk))
+        if let j = journal { stmt.bind(2, j) }
+
+        var out: [(Entry, Int64)] = []
+        while stmt.step() {
+            let ident = stmt.text(0) ?? ""
+            let lat = stmt.isNull(5) ? nil : stmt.double(5)
+            let lng = stmt.isNull(6) ? nil : stmt.double(6)
+            let loc: Entry.Location? = (lat != nil && lng != nil) ? .init(lat: lat!, lng: lng!) : nil
+            let entry = Entry(
+                identifier: ident,
+                date: cocoaToISO(stmt.double(1)),
+                journal: stmt.text(2) ?? "",
+                wordcount: Int(stmt.int(3)),
+                preview: nil,
+                text: stmt.text(4),
+                tags: [],
+                location: loc,
+                bookmarked: stmt.int(7) == 1
+            )
+            out.append((entry, stmt.int(8)))
         }
         return out
     }
