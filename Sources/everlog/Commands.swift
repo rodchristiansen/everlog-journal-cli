@@ -179,14 +179,18 @@ struct New: ParsableCommand {
 struct ExportCmd: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "export",
-        abstract: "Export entries to Markdown (one file per entry) or JSON (single file).",
+        abstract: "Export entries to Markdown, JSON, or Day One-compatible JSON.",
         discussion: """
-        Markdown output is organized as <to>/<journal>/<YYYY-MM-DDTHHMMSS>-<shortid>.md \
+        - markdown: one file per entry at <to>/<journal>/<YYYY-MM-DDTHHMMSS>-<shortid>.md \
         with YAML frontmatter (identifier, date, journal, tags, location, bookmarked, \
-        wordcount) followed by the entry body. JSON output is a single file containing \
-        the full Entry array (use --to - to stream to stdout).
+        wordcount) followed by the entry body.
+        - json: single file with the full Entry array (use --to - to stream to stdout).
+        - dayone: single Day One-compatible JSON document — `{metadata, entries[]}` \
+        with Day One field names (uuid, creationDate, text, tags, starred, location).
 
-        Attachments and Day One-compatible format are not yet supported.
+        Attachments are not yet exported. The local DB stores only inline JPEG \
+        thumbnails (~800px wide); full-resolution images live in CloudKit and aren't \
+        downloaded to disk. See docs/schema.md.
         """
     )
 
@@ -218,6 +222,12 @@ struct ExportCmd: ParsableCommand {
             written = try Export.writeJSON(entries, toPath: path)
             if path != "-" {
                 FileHandle.standardError.write(Data("Wrote \(written) entries to \(path)\n".utf8))
+            }
+        case .dayone:
+            let path = (to as NSString).expandingTildeInPath
+            written = try Export.writeDayOne(entries, toPath: path)
+            if path != "-" {
+                FileHandle.standardError.write(Data("Wrote \(written) entries to \(path) (Day One format)\n".utf8))
             }
         }
     }

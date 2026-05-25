@@ -4,6 +4,7 @@ import Foundation
 enum ExportFormat: String, CaseIterable, ExpressibleByArgument {
     case markdown
     case json
+    case dayone
 }
 
 enum ExportError: Error, CustomStringConvertible {
@@ -49,6 +50,38 @@ enum Export {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         let data = try encoder.encode(entries)
+        try emit(data, toPath: path)
+        return entries.count
+    }
+
+    /// Write entries as a Day One-compatible JSON document.
+    ///
+    /// Day One's import format (verified against the documented export shape) is a
+    /// single top-level object `{ "metadata": { "version": "1.0" }, "entries": [...] }`.
+    /// Each entry has `uuid` (32-char hex, no hyphens), `creationDate`, `text`, `tags`,
+    /// `starred`, and an optional nested `location: { latitude, longitude }`.
+    static func writeDayOne(_ entries: [Entry], toPath path: String) throws -> Int {
+        let doc = DayOneExport(
+            metadata: .init(version: "1.0"),
+            entries: entries.map { e in
+                DayOneEntry(
+                    uuid: e.identifier.replacingOccurrences(of: "-", with: ""),
+                    creationDate: e.date,
+                    text: e.text ?? "",
+                    tags: e.tags,
+                    starred: e.bookmarked,
+                    location: e.location.map { .init(latitude: $0.lat, longitude: $0.lng) }
+                )
+            }
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        let data = try encoder.encode(doc)
+        try emit(data, toPath: path)
+        return entries.count
+    }
+
+    private static func emit(_ data: Data, toPath path: String) throws {
         if path == "-" {
             FileHandle.standardOutput.write(data)
             FileHandle.standardOutput.write(Data([0x0A]))
@@ -64,7 +97,27 @@ enum Export {
                 throw ExportError.writeFailed(url.path, underlying: error)
             }
         }
-        return entries.count
+    }
+
+    // MARK: - Day One schema
+
+    private struct DayOneExport: Codable {
+        let metadata: Metadata
+        let entries: [DayOneEntry]
+        struct Metadata: Codable { let version: String }
+    }
+
+    private struct DayOneEntry: Codable {
+        let uuid: String
+        let creationDate: String
+        let text: String
+        let tags: [String]
+        let starred: Bool
+        let location: Location?
+        struct Location: Codable {
+            let latitude: Double
+            let longitude: Double
+        }
     }
 
     // MARK: - Markdown body
