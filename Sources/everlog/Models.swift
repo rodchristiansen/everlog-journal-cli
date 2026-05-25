@@ -10,6 +10,26 @@ struct Tag: Codable {
     let count: Int
 }
 
+struct StatsResult: Codable {
+    let totalEntries: Int
+    let totalWords: Int
+    let daysWritten: Int
+    let currentStreak: Int
+    let longestStreak: Int
+    let longestStreakStart: String?  // YYYY-MM-DD, nil if no entries
+    let longestStreakEnd: String?
+    let firstEntryDate: String?      // YYYY-MM-DD
+    let lastEntryDate: String?
+    let filter: StatsFilter
+}
+
+struct StatsFilter: Codable {
+    let journal: String?
+    let tag: String?
+    let from: String?
+    let to: String?
+}
+
 struct Entry: Codable {
     struct Location: Codable {
         let lat: Double
