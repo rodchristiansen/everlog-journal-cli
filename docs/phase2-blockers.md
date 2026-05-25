@@ -1,6 +1,6 @@
 # Phase 2 blockers — Shortcuts dispatch
 
-**Status (2026-05-24):** The Swift CLI side of Phase 2 is implemented (`everlog new`, `install-shortcuts`, Resources bundling, helper-shortcut machinery). The actual entry-creation dispatch path is **not reliably working** at the time of this writing. This document records what we tried, what we learned, and the platform constraints that need a different angle than the original Phase 2 plan assumed.
+**Status (2026-05-24, updated post-retry):** The Swift CLI side of Phase 2 is implemented (`everlog new`, `install-shortcuts`, Resources bundling, helper-shortcut machinery). The actual entry-creation dispatch path is **not reliably working** at the time of this writing. An empirical retry with the deprecated `CreateEntryIntent` (plain String message, hypothesized to bypass the IntentsTransferable type-coercion issue) failed identically — see "Retry findings" below. The blocker is now believed to be in `shortcuts run`'s headless input delivery, not in any specific intent's parameter type.
 
 ## What we learned about Everlog's AppIntents
 
@@ -30,18 +30,38 @@ Every CLI-driven invocation we tried produced **exit 0 with no entry created**, 
 
 Console logs (`log show --predicate 'process == "shortcuts"'`) confirm the shortcut workflow runs to completion (`workflow did finish running`), and Everlog's process log emits `Finished Processing History. There are 0 cloud inserts, 0 deletes pending` at the exact moment the shortcut completes — indicating the AppIntent was invoked but with an empty/nil `message` parameter, so no entry was committed.
 
-## Hypothesis
+## Retry findings (2026-05-24)
 
-`AICreateEntryIntent.message` is typed as an `IntentsTransferable` (type-12) tied to Apple's journal assistant schema. The Shortcuts.app editor coerces typed-in text to the right transferable form before invoking. When `shortcuts run` passes raw bytes via stdin or a file path, the resulting variable doesn't satisfy the transferable type, and the AppIntent silently rejects the call (no error, no log, no entry). The deprecated `CreateEntryIntent` accepts plain `String` and may be the only intent that works from third-party CLI invocations today — but the user-visible path forward is unclear (it WILL be removed by Wonderbit eventually).
+A targeted retry built a minimal helper using the **deprecated `CreateEntryIntent`** (`text` parameter is plain `String`, not IntentsTransferable). Helper signed cleanly, installed cleanly, and `shortcuts run` exited 0 — but **no entry was created**, identical behavior to the AICreateEntryIntent path. The IntentsTransferable hypothesis is **ruled out**.
+
+Reproduction (with the deprecated-intent helper installed):
+
+```
+echo "phase2-retry verification body" | shortcuts run "Everlog CLI- New Entry" --input-path -
+# exit 0, no stdout, no stderr
+everlog search "phase2-retry verification body"
+# (no results)
+```
+
+This rules out parameter-type coercion as the cause. The remaining candidate explanations:
+
+1. **`shortcuts run --input-path -` doesn't deliver bytes to the ExtensionInput magic variable** when invoked headlessly. The shortcut runs but Shortcut Input is effectively empty, so the AppIntent receives a nil/empty `text` and silently no-ops. Would explain why manual Play-button invocations in Shortcuts.app work (Shortcuts UI injects typed text directly, bypassing input plumbing).
+2. **Sandboxing / entitlement gating**. `shortcuts run` launched from Terminal/cmux may lack the entitlement Everlog requires to write to its group container when triggered without an explicitly user-initiated GUI invocation. Manual Play has a user-gesture context that headless dispatch doesn't.
+3. **Wonderbit rejects missing-default optional parameters** when the call originates from `shortcuts run`. Passing `journal`/`date` explicitly might flip the silent failure into success or a visible error.
+
+## Original (now-superseded) hypothesis
+
+`AICreateEntryIntent.message` is typed as an `IntentsTransferable` (type-12) tied to Apple's journal assistant schema, so CLI-piped raw bytes can't satisfy it. The retry showed even the plain-String deprecated intent fails identically, so this isn't the cause — the failure is upstream, in how Shortcut Input is (not) propagated under `shortcuts run`.
 
 ## What would unblock this
 
-In rough order of effort:
+In rough order of effort, post-retry:
 
-1. **Empirical verification with CreateEntryIntent (deprecated).** Build a helper that targets the deprecated intent (plain String message), test end-to-end. If that works, the IntentsTransferable hypothesis is confirmed and we have a stop-gap.
-2. **File a feature request with Wonderbit** for write-capable `everlog://` URLs (e.g. `everlog://new?journal=X&text=...`). Avoids Shortcuts entirely. See [docs/phase3-research.md](phase3-research.md).
-3. **Wait for or research a Shortcuts mechanism to coerce String → IntentsTransferable.** There may be an explicit "Set Variable" type-coercion or an action that wraps the string into the right transferable wrapper — but we didn't find it in this session.
-4. **Replace the Shortcuts bridge with a direct AppIntents binding** — blocked at the platform level for cross-process invocation, see [docs/phase3-research.md](phase3-research.md).
+1. **Verify Shortcut Input arrives at all under `shortcuts run`.** Build a debug helper whose only action is `Save File` writing the value of Shortcut Input to `~/.everlog-cli/debug-input.txt`. Invoke via the same CLI path and read the file. If it's empty, the input plumbing is the bug and we need a different delivery channel (e.g. clipboard, named pipe, or a long-lived helper process).
+2. **Compare entitlements** between Shortcuts.app's foreground runner and the `shortcuts run` background runner — `codesign -d --entitlements - $(which shortcuts)` and the Shortcuts.app binary side by side. If they diverge, headless dispatch may be missing the AppIntent invocation entitlement that Wonderbit gates on.
+3. **File a feature request with Wonderbit** for write-capable `everlog://` URLs (e.g. `everlog://new?journal=X&text=...`). Avoids the Shortcuts/AppIntents layer entirely. See [docs/phase3-research.md](phase3-research.md).
+4. **Try passing parameters explicitly** rather than relying on AppIntent defaults — author a helper that hardcodes a known journal name in the `journal` parameter to see if the silent failure shifts.
+5. **Replace the Shortcuts bridge with a direct AppIntents binding** — blocked at the platform level for cross-process invocation, see [docs/phase3-research.md](phase3-research.md).
 
 ## Files in this state
 
@@ -63,6 +83,6 @@ If the test entry doesn't appear in the `show` output, you're hitting the same w
 
 ## Next session recommendations
 
-- Start with the **deprecated CreateEntryIntent** to validate that the rest of the pipeline (Swift CLI, helper install, bridge file) is sound. Live with the deprecation warning until a better path opens up.
-- Look at `EverlogFocusFilter` and `BookmarkEntryAppIntent` — both are background-capable and use simpler parameter types. If they work via `shortcuts run`, that confirms the issue is specifically the AI-flavored intents.
-- Try a known-third-party AppIntent on this machine that's verified to work via `shortcuts run`. If none do, the issue is broader than Everlog.
+- **Run the debug-input shortcut first** (unblock #1 above). It's the smallest possible signal — if Shortcut Input is empty under `shortcuts run`, we know to stop tinkering with intents.
+- If Shortcut Input does arrive: try `BookmarkEntryAppIntent` (background-capable, takes an EntryEntity + Bool — no String typing). A successful bookmark toggle on a known entry would prove headless AppIntents dispatch works at all on this Mac, narrowing the issue to text-parameter handling.
+- If headless dispatch is universally broken: pivot to the `everlog://` URL feature request to Wonderbit and treat Phase 2 as platform-blocked rather than CLI-blocked.
