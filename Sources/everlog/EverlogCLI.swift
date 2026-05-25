@@ -25,6 +25,7 @@ struct EverlogCLI: ParsableCommand {
             Read.self,
             OnThisDay.self,
             Random.self,
+            Watch.self,
             New.self,
             Append.self,
             ExportCmd.self,
