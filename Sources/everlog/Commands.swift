@@ -46,13 +46,16 @@ struct Show: ParsableCommand {
     @Argument(help: "Number of entries to return (default 10).")
     var limit: Int = 10
 
+    @OptionGroup var dateFilter: DateFilter
+
     @Flag(name: .long, help: "Emit JSON instead of formatted output.")
     var json = false
 
     func run() throws {
+        let (from, to) = try dateFilter.cocoaRange()
         let db = try DB.open()
         defer { DB.close(db) }
-        let rows = try DB.showJournal(db, journal: journal, limit: limit)
+        let rows = try DB.showJournal(db, journal: journal, limit: limit, from: from, to: to)
         if json { Output.emitJSON(rows) } else { Output.emitEntries(rows) }
     }
 }
@@ -74,13 +77,16 @@ struct Search: ParsableCommand {
     @Argument(help: "Max results (default 20).")
     var limit: Int = 20
 
+    @OptionGroup var dateFilter: DateFilter
+
     @Flag(name: .long, help: "Emit JSON instead of formatted output.")
     var json = false
 
     func run() throws {
+        let (from, to) = try dateFilter.cocoaRange()
         let db = try DB.open()
         defer { DB.close(db) }
-        let rows = try DB.search(db, query: query, journal: journal, tag: tag, limit: limit)
+        let rows = try DB.search(db, query: query, journal: journal, tag: tag, limit: limit, from: from, to: to)
         if json { Output.emitJSON(rows) } else { Output.emitEntries(rows) }
     }
 }
@@ -151,6 +157,35 @@ struct Random: ParsableCommand {
     }
 }
 
+struct Stats: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        abstract: "Aggregate statistics: entry/word counts, days written, streaks."
+    )
+
+    @Option(name: .long, help: "Restrict to one journal.")
+    var journal: String?
+
+    @Option(name: .long, help: "Restrict to entries with this tag.")
+    var tag: String?
+
+    @OptionGroup var dateFilter: DateFilter
+
+    @Flag(name: .long, help: "Emit JSON instead of formatted output.")
+    var json = false
+
+    func run() throws {
+        let (from, to) = try dateFilter.cocoaRange()
+        let db = try DB.open()
+        defer { DB.close(db) }
+        let result = try DB.stats(db, journal: journal, tag: tag, from: from, to: to)
+        if json {
+            Output.emitJSON(result)
+        } else {
+            Output.emitStats(result)
+        }
+    }
+}
+
 // MARK: - Write subcommands (Phase 2)
 
 struct New: ParsableCommand {
@@ -202,10 +237,13 @@ struct ExportCmd: ParsableCommand {
     @Flag(name: .long, help: "Include trashed entries.")
     var includeTrashed = false
 
+    @OptionGroup var dateFilter: DateFilter
+
     func run() throws {
+        let (fromDate, toDate) = try dateFilter.cocoaRange()
         let db = try DB.open()
         defer { DB.close(db) }
-        let entries = try DB.allEntries(db, journal: journal, includingTrashed: includeTrashed)
+        let entries = try DB.allEntries(db, journal: journal, includingTrashed: includeTrashed, from: fromDate, to: toDate)
 
         let written: Int
         switch format {

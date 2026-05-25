@@ -91,6 +91,44 @@ enum Output {
         print(e.text ?? "(empty)")
     }
 
+    static func emitStats(_ s: StatsResult) {
+        if s.totalEntries == 0 {
+            print("(no entries match the filter)")
+            return
+        }
+        let labelW = 20
+        func line(_ label: String, _ value: String) {
+            print("  \(label.paddedRight(to: labelW))\(value)")
+        }
+        line("Total entries:", formatNumber(s.totalEntries))
+        line("Total words:", formatNumber(s.totalWords))
+        line("Days written:", formatNumber(s.daysWritten))
+        line("Current streak:", "\(s.currentStreak) day\(s.currentStreak == 1 ? "" : "s")")
+        if let lst = s.longestStreakStart, let len = s.longestStreakEnd {
+            line("Longest streak:", "\(s.longestStreak) days  (\(lst) → \(len))")
+        } else {
+            line("Longest streak:", "\(s.longestStreak) days")
+        }
+        if let first = s.firstEntryDate, let last = s.lastEntryDate {
+            line("Date range:", "\(first) → \(last)")
+        }
+        var appliedFilters: [String] = []
+        if let j = s.filter.journal { appliedFilters.append("journal=\(j)") }
+        if let t = s.filter.tag { appliedFilters.append("tag=#\(t)") }
+        if let f = s.filter.from { appliedFilters.append("from=\(f)") }
+        if let t = s.filter.to { appliedFilters.append("to=\(t)") }
+        if !appliedFilters.isEmpty {
+            print("")
+            print("  Filters: \(appliedFilters.joined(separator: ", "))")
+        }
+    }
+
+    private static func formatNumber(_ n: Int) -> String {
+        let f = NumberFormatter()
+        f.numberStyle = .decimal
+        return f.string(from: NSNumber(value: n)) ?? "\(n)"
+    }
+
     // MARK: - private
 
     private static func renderEntryRow(_ r: Entry) {

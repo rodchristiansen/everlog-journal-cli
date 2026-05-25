@@ -179,16 +179,30 @@ extension DB {
         return out
     }
 
-    static func showJournal(_ db: OpaquePointer, journal: String, limit: Int) throws -> [Entry] {
-        let sql = """
+    static func showJournal(
+        _ db: OpaquePointer,
+        journal: String,
+        limit: Int,
+        from: Double? = nil,
+        to: Double? = nil
+    ) throws -> [Entry] {
+        var sql = """
         SELECT e.ZIDENTIFIER, e.ZDATE, j.ZNAME, e.ZWORDCOUNT, substr(e.ZTEXT, 1, 200)
         FROM ZENTRY e
         JOIN ZJOURNAL j ON j.Z_PK = e.ZJOURNAL
         WHERE j.ZNAME = ?1 AND e.ZISTRASHED = 0
-        ORDER BY e.ZDATE DESC
-        LIMIT ?2
         """
-        let stmt = try Statement(db, sql).bind(1, journal).bind(2, limit)
+        var idx: Int32 = 2
+        var fromIdx: Int32 = 0
+        var toIdx: Int32 = 0
+        if from != nil { sql += " AND e.ZDATE >= ?\(idx)"; fromIdx = idx; idx += 1 }
+        if to != nil { sql += " AND e.ZDATE <= ?\(idx)"; toIdx = idx; idx += 1 }
+        sql += " ORDER BY e.ZDATE DESC LIMIT ?\(idx)"
+        let limitIdx = idx
+        let stmt = try Statement(db, sql).bind(1, journal)
+        if let f = from { stmt.bind(fromIdx, f) }
+        if let t = to { stmt.bind(toIdx, t) }
+        stmt.bind(limitIdx, limit)
         return collectEntries(stmt)
     }
 
@@ -197,7 +211,9 @@ extension DB {
         query: String,
         journal: String?,
         tag: String?,
-        limit: Int
+        limit: Int,
+        from: Double? = nil,
+        to: Double? = nil
     ) throws -> [Entry] {
         var sql = """
         SELECT DISTINCT e.ZIDENTIFIER, e.ZDATE, j.ZNAME, e.ZWORDCOUNT, substr(e.ZTEXT, 1, 200)
@@ -222,6 +238,10 @@ extension DB {
             journalBind = bindIdx
             bindIdx += 1
         }
+        var fromBind: Int32 = 0
+        var toBind: Int32 = 0
+        if from != nil { sql += " AND e.ZDATE >= ?\(bindIdx)"; fromBind = bindIdx; bindIdx += 1 }
+        if to != nil { sql += " AND e.ZDATE <= ?\(bindIdx)"; toBind = bindIdx; bindIdx += 1 }
         sql += " ORDER BY e.ZDATE DESC LIMIT ?\(bindIdx)"
         let limitBind = bindIdx
 
@@ -229,6 +249,8 @@ extension DB {
         if let t = tag { stmt.bind(tagBind, t) }
         stmt.bind(queryBind, "%\(query)%")
         if let j = journal { stmt.bind(journalBind, j) }
+        if let f = from { stmt.bind(fromBind, f) }
+        if let t = to { stmt.bind(toBind, t) }
         stmt.bind(limitBind, limit)
         return collectEntries(stmt)
     }
@@ -308,7 +330,9 @@ extension DB {
     static func allEntries(
         _ db: OpaquePointer,
         journal: String? = nil,
-        includingTrashed: Bool = false
+        includingTrashed: Bool = false,
+        from: Double? = nil,
+        to: Double? = nil
     ) throws -> [Entry] {
         var sql = """
         SELECT e.ZIDENTIFIER, e.ZDATE, j.ZNAME, e.ZWORDCOUNT, e.ZTEXT,
@@ -317,13 +341,29 @@ extension DB {
         JOIN ZJOURNAL j ON j.Z_PK = e.ZJOURNAL
         """
         var conds: [String] = []
+        var binds: [(Int32, Any)] = []
+        var idx: Int32 = 1
         if !includingTrashed { conds.append("e.ZISTRASHED = 0") }
-        if journal != nil { conds.append("j.ZNAME = ?1") }
+        if let j = journal {
+            conds.append("j.ZNAME = ?\(idx)")
+            binds.append((idx, j)); idx += 1
+        }
+        if let f = from {
+            conds.append("e.ZDATE >= ?\(idx)")
+            binds.append((idx, f)); idx += 1
+        }
+        if let t = to {
+            conds.append("e.ZDATE <= ?\(idx)")
+            binds.append((idx, t)); idx += 1
+        }
         if !conds.isEmpty { sql += " WHERE " + conds.joined(separator: " AND ") }
         sql += " ORDER BY e.ZDATE ASC"
 
         let stmt = try Statement(db, sql)
-        if let j = journal { stmt.bind(1, j) }
+        for (i, v) in binds {
+            if let s = v as? String { stmt.bind(i, s) }
+            else if let d = v as? Double { stmt.bind(i, d) }
+        }
 
         var entries: [Entry] = []
         var pks: [String: Int64] = [:]
@@ -428,5 +468,145 @@ extension DB {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime]
         return formatter.string(from: date)
+    }
+
+    // MARK: - Stats
+
+    /// Aggregate stats: counts, wordsum, distinct days, and current/longest streak.
+    /// Streaks are computed in Swift from the distinct list of local-date strings.
+    static func stats(
+        _ db: OpaquePointer,
+        journal: String?,
+        tag: String?,
+        from: Double?,
+        to: Double?
+    ) throws -> StatsResult {
+        // Base SQL fragment shared by aggregate + distinct-days queries.
+        var join = "FROM ZENTRY e JOIN ZJOURNAL j ON j.Z_PK = e.ZJOURNAL"
+        if tag != nil {
+            join += " JOIN Z_17TAGS jt ON jt.Z_17ENTRIES1 = e.Z_PK"
+            join += " JOIN ZTAG t ON t.Z_PK = jt.Z_22TAGS"
+        }
+        var conds = ["e.ZISTRASHED = 0"]
+        var bindOrder: [(String, Any)] = []
+        if let j = journal { conds.append("j.ZNAME = ?"); bindOrder.append(("j", j)) }
+        if let t = tag { conds.append("t.ZTITLE = ?"); bindOrder.append(("t", t)) }
+        if let f = from { conds.append("e.ZDATE >= ?"); bindOrder.append(("f", f)) }
+        if let t = to { conds.append("e.ZDATE <= ?"); bindOrder.append(("to", t)) }
+        let whereSQL = " WHERE " + conds.joined(separator: " AND ")
+
+        // Aggregate query
+        let aggSQL = "SELECT COUNT(*), COALESCE(SUM(e.ZWORDCOUNT), 0), MIN(e.ZDATE), MAX(e.ZDATE) " + join + whereSQL
+        let agg = try Statement(db, indexedPlaceholders(aggSQL))
+        bindAll(agg, bindOrder)
+        var totalEntries = 0
+        var totalWords = 0
+        var firstDate: Double?
+        var lastDate: Double?
+        if agg.step() {
+            totalEntries = Int(agg.int(0))
+            totalWords = Int(agg.int(1))
+            firstDate = agg.isNull(2) ? nil : agg.double(2)
+            lastDate = agg.isNull(3) ? nil : agg.double(3)
+        }
+
+        // Distinct local-date days
+        let daysSQL = "SELECT DISTINCT date(e.ZDATE + 978307200, 'unixepoch', 'localtime') " + join + whereSQL + " ORDER BY 1"
+        let daysStmt = try Statement(db, indexedPlaceholders(daysSQL))
+        bindAll(daysStmt, bindOrder)
+        var days: [String] = []
+        while daysStmt.step() {
+            if let d = daysStmt.text(0) { days.append(d) }
+        }
+
+        let streaks = computeStreaks(days: days)
+
+        return StatsResult(
+            totalEntries: totalEntries,
+            totalWords: totalWords,
+            daysWritten: days.count,
+            currentStreak: streaks.current,
+            longestStreak: streaks.longest,
+            longestStreakStart: streaks.longestStart,
+            longestStreakEnd: streaks.longestEnd,
+            firstEntryDate: firstDate.map { String(cocoaToISO($0).prefix(10)) },
+            lastEntryDate: lastDate.map { String(cocoaToISO($0).prefix(10)) },
+            filter: StatsFilter(
+                journal: journal,
+                tag: tag,
+                from: from.map { String(cocoaToISO($0).prefix(10)) },
+                to: to.map { String(cocoaToISO($0).prefix(10)) }
+            )
+        )
+    }
+
+    // Rewrite "?" placeholders to "?1", "?2", … so each binds to its positional argument.
+    private static func indexedPlaceholders(_ sql: String) -> String {
+        var out = ""
+        var idx = 1
+        for ch in sql {
+            if ch == "?" { out += "?\(idx)"; idx += 1 } else { out.append(ch) }
+        }
+        return out
+    }
+
+    private static func bindAll(_ stmt: Statement, _ binds: [(String, Any)]) {
+        for (i, pair) in binds.enumerated() {
+            let pos = Int32(i + 1)
+            if let s = pair.1 as? String { stmt.bind(pos, s) }
+            else if let d = pair.1 as? Double { stmt.bind(pos, d) }
+        }
+    }
+
+    private static func computeStreaks(days: [String]) -> (current: Int, longest: Int, longestStart: String?, longestEnd: String?) {
+        guard !days.isEmpty else { return (0, 0, nil, nil) }
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd"
+        f.timeZone = .current
+        f.locale = Locale(identifier: "en_US_POSIX")
+        let parsed: [Date] = days.compactMap { f.date(from: $0) }
+        guard !parsed.isEmpty else { return (0, 0, nil, nil) }
+
+        let cal = Calendar(identifier: .gregorian)
+        var longest = 1
+        var longestStartIdx = 0
+        var longestEndIdx = 0
+        var runStart = 0
+        var runLen = 1
+        for i in 1..<parsed.count {
+            let prev = parsed[i - 1]
+            let cur = parsed[i]
+            let comps = cal.dateComponents([.day], from: prev, to: cur)
+            if comps.day == 1 {
+                runLen += 1
+            } else {
+                runLen = 1
+                runStart = i
+            }
+            if runLen > longest {
+                longest = runLen
+                longestStartIdx = runStart
+                longestEndIdx = i
+            }
+        }
+
+        // Current streak: count back from today (or most recent day if older than today).
+        let today = cal.startOfDay(for: Date())
+        var current = 0
+        let last = parsed[parsed.count - 1]
+        let daysSinceLast = cal.dateComponents([.day], from: cal.startOfDay(for: last), to: today).day ?? 0
+        if daysSinceLast <= 1 {
+            current = 1
+            var i = parsed.count - 1
+            while i > 0 {
+                let prev = parsed[i - 1]
+                if cal.dateComponents([.day], from: prev, to: parsed[i]).day == 1 {
+                    current += 1
+                    i -= 1
+                } else { break }
+            }
+        }
+
+        return (current, longest, days[longestStartIdx], days[longestEndIdx])
     }
 }
