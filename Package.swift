@@ -16,9 +16,6 @@ let package = Package(
             dependencies: [
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ],
-            resources: [
-                .copy("Resources/Shortcuts"),
-            ],
             linkerSettings: [
                 .linkedLibrary("sqlite3"),
             ]

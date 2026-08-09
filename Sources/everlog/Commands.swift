@@ -233,28 +233,105 @@ struct Watch: ParsableCommand {
     }
 }
 
-// MARK: - Write subcommands (Phase 2)
+// MARK: - Write subcommands
 
 struct New: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "new",
-        abstract: "Create a new entry (file-bridge to Everlog's Create Entry AppIntent via Shortcuts).",
+        abstract: "Create a new entry — fully headless, no Shortcuts involved.",
         discussion: """
-        EXPERIMENTAL. The Shortcuts → AppIntents dispatch path has unresolved \
-        platform constraints — see docs/phase2-blockers.md. This command writes \
-        the body text to ~/.everlog-cli/message.txt and then invokes the helper \
-        Shortcut, which reads the file and calls Everlog's CreateEntry AppIntent. \
-        Journal/date/bookmarked are not yet wired through — entries land in \
-        Everlog's current default journal.
+        Writes through Everlog's own compiled CoreData model against the live \
+        store, with persistent-history tracking so the app's CloudKit sync \
+        picks the entry up like any other local edit. A backup of the store is \
+        taken to ~/.everlog-cli/backups/ before every write session.
+
+        Body text comes from the argument, or from stdin when the argument is \
+        omitted or is `-`.
         """
     )
 
-    @Argument(help: "Entry body text. Wrap multi-word text in quotes.")
-    var text: String
+    @Argument(help: "Entry body text. Omit (or pass -) to read from stdin.")
+    var text: String?
+
+    @Option(name: [.customShort("j"), .long], help: "Journal name (e.g. Mindset).")
+    var journal: String = "Journal"
+
+    @Option(name: .long, help: "Entry title — becomes a markdown heading above the body.")
+    var title: String?
+
+    @Option(name: .long, help: "Entry date, ISO-8601 (e.g. 2026-08-08 or 2026-08-08T21:30:00). Defaults to now.")
+    var date: String?
+
+    @Option(name: [.customShort("t"), .customLong("tag")], help: "Tag to attach (repeatable).")
+    var tags: [String] = []
+
+    @Flag(name: .long, help: "Bookmark the entry.")
+    var bookmark = false
+
+    @Flag(name: .long, help: "Emit the created entry as JSON.")
+    var json = false
 
     func run() throws {
-        try Shortcuts.runNewEntry(helper: "Everlog CLI- New Entry", message: text)
-        print("Dispatched to Everlog. Verify with `everlog show <journal>` — if the entry didn't land, see docs/phase2-blockers.md.")
+        var body: String
+        if let text, text != "-" {
+            body = text
+        } else {
+            body = String(data: FileHandle.standardInput.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        }
+        body = body.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !body.isEmpty else {
+            throw ValidationError("Entry body is empty.")
+        }
+        if let title, !title.isEmpty {
+            body = "# \(title)\n\(body)"
+        }
+
+        let entryDate: Date
+        if let date {
+            guard let parsed = Self.parseDate(date) else {
+                throw ValidationError("Could not parse date: \(date). Use ISO-8601 (2026-08-08 or 2026-08-08T21:30:00).")
+            }
+            entryDate = parsed
+        } else {
+            entryDate = Date()
+        }
+
+        let created = try Store.createEntry(
+            body: body, journalName: journal, date: entryDate,
+            tags: tags, bookmarked: bookmark)
+
+        if json {
+            Output.emitJSON(created)
+        } else {
+            print("Created \(created.identifier.prefix(8)) in \(created.journal) (\(created.wordCount) words)")
+        }
+    }
+
+    static func parseDate(_ s: String) -> Date? {
+        let formats = ["yyyy-MM-dd'T'HH:mm:ss", "yyyy-MM-dd HH:mm", "yyyy-MM-dd"]
+        for format in formats {
+            let f = DateFormatter()
+            f.dateFormat = format
+            f.locale = Locale(identifier: "en_US_POSIX")
+            f.timeZone = .current
+            if let d = f.date(from: s) { return d }
+        }
+        return ISO8601DateFormatter().date(from: s)
+    }
+}
+
+struct Trash: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "trash",
+        abstract: "Move an entry to Everlog's trash (soft delete, recoverable in-app)."
+    )
+
+    @Argument(help: "Entry identifier or unique prefix (from `everlog show --json`).")
+    var identifier: String
+
+    func run() throws {
+        let id = try Store.trashEntry(identifierPrefix: identifier)
+        print("Trashed \(id.prefix(8))")
     }
 }
 
@@ -308,57 +385,17 @@ struct ExportCmd: ParsableCommand {
 struct Append: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "append",
-        abstract: "Append text to an existing entry (Slice 2 — not yet implemented)."
+        abstract: "Append text to an existing entry."
     )
 
-    @Argument var identifier: String
-    @Argument var text: String
+    @Argument(help: "Entry identifier or unique prefix.")
+    var identifier: String
+
+    @Argument(help: "Text to append (added on a new line).")
+    var text: String
 
     func run() throws {
-        throw ValidationError(
-            "`append` lands in Phase 2 Slice 2. Use `everlog new` for now."
-        )
-    }
-}
-
-struct InstallShortcuts: ParsableCommand {
-    static let configuration = CommandConfiguration(
-        commandName: "install-shortcuts",
-        abstract: "Install the helper Shortcuts that bridge the CLI to Everlog's AppIntents."
-    )
-
-    @Flag(name: .long, help: "List installed/missing helpers without installing.")
-    var check = false
-
-    func run() throws {
-        try Shortcuts.ensureBinaryAvailable()
-        let helpers = Shortcuts.bundledHelpers()
-
-        if helpers.isEmpty {
-            print("(no bundled helper shortcuts found — this build may be missing Resources)")
-            return
-        }
-
-        for helper in helpers {
-            let displayName = helper.deletingPathExtension().lastPathComponent
-            let installed = Shortcuts.isInstalled(displayName)
-            let mark = installed ? "✓" : "·"
-            print("\(mark) \(displayName)")
-            if check { continue }
-            if installed {
-                continue
-            }
-            // Open the .shortcut in Shortcuts.app for the user to confirm import.
-            let task = Process()
-            task.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-            task.arguments = [helper.path]
-            try task.run()
-            task.waitUntilExit()
-            print("  → opened in Shortcuts.app; confirm 'Add Shortcut' to install.")
-        }
-
-        if !check {
-            print("\nWhen the import dialogs are done, run `everlog install-shortcuts --check`.")
-        }
+        let id = try Store.appendText(identifierPrefix: identifier, text: text)
+        print("Appended to \(id.prefix(8))")
     }
 }

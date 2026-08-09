@@ -12,11 +12,13 @@ struct EverlogCLI: ParsableCommand {
         the running app for the file. All read operations are headless — \
         Everlog.app is not launched or activated.
 
-        Write subcommands (Phase 2) will wrap Everlog's Shortcuts actions \
-        (Create Entry, Append Text to Entry, etc.) via the macOS `shortcuts` \
-        CLI or, eventually, direct AppIntents bindings.
+        Writes are headless too: the CLI loads Everlog's own compiled \
+        CoreData model from the app bundle and saves through it with \
+        persistent-history tracking, the same multi-process pattern the \
+        Everlog widget uses. The app's CloudKit sync picks the changes up \
+        like any other local edit. No Shortcuts, no app activation.
         """,
-        version: "0.1.0",
+        version: "0.2.0",
         subcommands: [
             Journals.self,
             Tags.self,
@@ -28,8 +30,8 @@ struct EverlogCLI: ParsableCommand {
             Watch.self,
             New.self,
             Append.self,
+            Trash.self,
             ExportCmd.self,
-            InstallShortcuts.self,
         ],
         defaultSubcommand: nil
     )
