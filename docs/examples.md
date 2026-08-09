@@ -104,3 +104,36 @@ If `everlog journals` returns nothing, either Everlog isn't installed or iCloud 
 ```
 ~/Library/Group Containers/group.hummingbird/Hummingbird.sqlite
 ```
+
+## Writing
+
+Quick capture into a journal:
+
+```bash
+everlog new "Grateful for the quiet morning" -j Mindset --tag wins
+```
+
+A titled, backdated entry from a file:
+
+```bash
+everlog new -j Cashflow --title "August books" --date 2026-08-01 - < notes.md
+```
+
+Photos with the entry:
+
+```bash
+everlog new "Sunset at the seawall" -j Leisure -i sunset.jpg
+```
+
+Add to an existing entry (identifier prefix from `everlog show --json`):
+
+```bash
+everlog append 8556DCCA "One more thought before bed."
+everlog attach 8556DCCA screenshot.png
+```
+
+Soft-delete (recoverable in Everlog's trash):
+
+```bash
+everlog trash 8556DCCA
+```

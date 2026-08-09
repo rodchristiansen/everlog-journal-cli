@@ -113,8 +113,12 @@ enum Store {
     @discardableResult
     static func backup(keep: Int = 5) throws -> URL {
         let fm = FileManager.default
-        let root = fm.homeDirectoryForCurrentUser
-            .appendingPathComponent(".everlog-cli/backups")
+        let root: URL
+        if let override = ProcessInfo.processInfo.environment["EVERLOG_BACKUP_DIR"] {
+            root = URL(fileURLWithPath: override)
+        } else {
+            root = fm.homeDirectoryForCurrentUser.appendingPathComponent(".everlog-cli/backups")
+        }
         let stampFormatter = DateFormatter()
         stampFormatter.dateFormat = "yyyy-MM-dd-HHmmss-SSS"
         stampFormatter.locale = Locale(identifier: "en_US_POSIX")
