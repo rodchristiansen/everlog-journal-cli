@@ -29,15 +29,29 @@ Every subcommand accepts `--json` for machine-readable output.
 | Phase | Feature | Status |
 |---|---|---|
 | **1. Read MVP** | journals · tags · show · search · read · on-this-day · random · `--json` everywhere | ✅ |
-| **2. Write bridge** | `everlog new <journal> "text"` via Everlog Shortcuts (`Create Entry`); attachment support; tag input | 🟡 stub |
-| **3. Direct AppIntents** | Skip the `shortcuts` CLI and invoke `co.wonderbit.Hummingbird.CreateEntryIntent` natively from Swift | ⬜ |
+| **2. Writes** | `new` (journal, title, date, tags, bookmark, stdin) · `append` · `attach` · `trash` — headless CoreData, no Shortcuts | ✅ |
+| **3. Image attachments** | `-i/--image` on `new`, `attach` for existing entries; blobs land in the AttachmentData store with thumbnails | ✅ |
 | **4. Statistics** | `everlog stats` — word counts, streaks, frequency by tag/journal; date-range filters | ⬜ |
-| **5. Export** | `everlog export --format markdown` (Day-One-style); JSON / CSV / NDJSON | ⬜ |
+| **5. Export** | `everlog export --format markdown`; JSON | ✅ |
 | **6. Distribution** | Homebrew tap, signed + notarized binary via Developer ID, GitHub Releases | ⬜ |
-| **7. Watch mode** | `everlog watch --exec "<cmd>"` — tail-like over the SQLite WAL for live events | ⬜ |
-| **8. Read-side Shortcuts compatibility** | `--use-shortcuts` flag falls back to Everlog's `Find Entries` / `Search Entries` actions instead of SQLite, for officially-supported reads | ⬜ |
+| **7. Watch mode** | `everlog watch` — tail new entries as NDJSON | ✅ |
 
 See [PROJECT_PLAN.md](PROJECT_PLAN.md) for the full roadmap.
+
+## Writing entries
+
+```bash
+everlog new "Grateful for the quiet morning" -j Mindset --tag wins
+everlog new -j Cashflow --title "August books" --date 2026-08-01 - < notes.md
+everlog new "Sunset at the seawall" -j Leisure -i sunset.jpg -i seawall.jpg
+everlog append 8556DCCA "One more thought before bed."
+everlog attach 8556DCCA screenshot.png
+everlog trash 8556DCCA
+```
+
+Everything is headless — no Shortcuts, no app activation, no prompts. A
+timestamped backup of both stores is written to `~/.everlog-cli/backups/`
+before every write session (newest five kept).
 
 ## How it works
 
@@ -47,9 +61,9 @@ Everlog stores its data in a SQLite database inside the app group container:
 ~/Library/Group Containers/group.hummingbird/Hummingbird.sqlite
 ```
 
-The CLI copies this file to `/tmp/everlog-ro.sqlite` (to avoid WAL conflicts with the running app) and queries it read-only. No private APIs, no app activation, no permission prompts — entirely transparent to Everlog itself.
+**Reads:** the CLI copies this file to `/tmp/everlog-ro.sqlite` (to avoid WAL conflicts with the running app) and queries it read-only. No private APIs, no app activation, no permission prompts — entirely transparent to Everlog itself.
 
-For write operations (Phase 2), the CLI will wrap Everlog's existing Shortcuts actions (`Create Entry`, `Append Text to Entry`, etc.) via the macOS `shortcuts` command, then progress (Phase 3) to invoking the underlying AppIntents directly from Swift.
+**Writes:** the CLI loads Everlog's own compiled CoreData model (`Hummingbird.momd`) straight out of the app bundle and saves through `NSPersistentStoreCoordinator` with persistent-history tracking — the same multi-process pattern Everlog's widget and share extensions use. Each save is recorded as a history transaction (author `everlog-cli`) that the app's CloudKit mirror exports like any other local edit, so sync stays intact. Writes never touch the SQLite directly, and the CLI refuses to open a store whose schema doesn't match the installed app (no auto-migration — that's the app's job).
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the full schema reference and design decisions.
 
@@ -86,16 +100,15 @@ No third-party language runtimes, no Python, no Node. Single signed binary in th
 
 ## Status
 
-🟡 **Early development.** Read MVP is functional and tested against a 3060-entry production database. Write side (Phase 2) is stubbed. Distribution channel (Phase 6) is not yet set up — install from source.
+🟢 **Functional.** Reads and writes are implemented and tested against a 3000+-entry production database (reads via snapshot SQLite, writes via the app's own CoreData model — see above). Distribution channel (Phase 6) is not yet set up — install from source.
 
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). Issues and PRs welcome — particularly for:
 
 - Schema column annotation (which `Z*` fields mean what — see [docs/schema.md](docs/schema.md))
-- Everlog Shortcuts action reverse-engineering (for the write bridge — see [docs/shortcuts.md](docs/shortcuts.md))
 - Cross-version compatibility (testing against older Everlog versions; reporting `Z_METADATA.Z_VERSION`)
-- AppIntents direct-binding research for Phase 3
+- Write-path hardening across Everlog updates (see [docs/write-path.md](docs/write-path.md))
 
 ## License
 

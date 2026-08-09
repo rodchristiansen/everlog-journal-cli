@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this repo is
 
-`everlog-journal-cli` is an unofficial Swift CLI for the Everlog (Hummingbird) journaling app by Wonderbit. It reads the local SQLite database directly and (eventually) writes via Everlog's Shortcuts actions or AppIntents.
+`everlog-journal-cli` is an unofficial Swift CLI for the Everlog (Hummingbird) journaling app by Wonderbit. It reads the local SQLite database directly and writes through Everlog's own compiled CoreData model (loaded from the app bundle) with persistent-history tracking — fully headless, no Shortcuts.
 
 This is an open-source project — written for both Rod's personal use and community contribution. MIT licensed. Not affiliated with Wonderbit.
 
@@ -20,12 +20,15 @@ This is an open-source project — written for both Rod's personal use and commu
 Sources/everlog/
 ├── EverlogCLI.swift     @main, top-level command, subcommand list
 ├── Commands.swift       each subcommand as a ParsableCommand struct
-├── DB.swift             SQLite snapshot + open + per-query functions
+├── DB.swift             SQLite snapshot + open + per-query functions (reads)
+├── Store.swift          CoreData write layer: app-bundle model, dual stores, backups
 ├── Models.swift         Codable structs (Journal, Tag, Entry)
+├── Export.swift         markdown/JSON export
 └── Output.swift         plain + JSON formatters, ANSI helpers
 
 Tests/everlogTests/
-└── DBTests.swift        integration-style; skips on machines without Everlog
+├── DBTests.swift        read-side integration; skips on machines without Everlog
+└── StoreTests.swift     write-side; copies both stores to a temp dir via EVERLOG_STORE/EVERLOG_ATTACH_STORE/EVERLOG_BACKUP_DIR overrides — never touches the real store
 
 Package.swift            SwiftPM. macOS 13+. swift-argument-parser. Links system sqlite3.
 
@@ -52,9 +55,9 @@ ln -sf "$(pwd)/.build/release/everlog" /usr/local/bin/everlog
 
 ## Architecture rules
 
-1. **Read = SQLite, Write = Shortcuts/AppIntents.** Never mutate the SQLite directly — that bypasses Wonderbit's CloudKit sync.
+1. **Read = snapshot SQLite, Write = CoreData through the app's own model.** Never mutate the SQLite directly — that bypasses Wonderbit's CloudKit sync. Writes open the store with `NSPersistentHistoryTrackingKey` and author `everlog-cli` so the app's CloudKit mirror exports them (see `docs/write-path.md`). Never enable auto-migration — if the model and store mismatch, error out and let the app migrate.
 2. **Always snapshot-before-query.** Copy live DB + WAL + SHM to `/tmp/everlog-ro.sqlite` (chmod 600), then open `SQLITE_OPEN_READONLY`.
-3. **No app activation.** Read operations must stay headless. Write operations may briefly activate Everlog/Shortcuts but only when invoking the underlying integration.
+3. **No app activation, ever.** Reads and writes are both headless; nothing launches or activates Everlog.app or Shortcuts. Writing while the app runs is safe (WAL + history tracking, same as the app's widget).
 4. **`--json` is a public API.** Output schemas in `Models.swift` are `Codable` and versioned. Breaking changes to JSON shape require a major version bump.
 5. **Schema is documented but not enforced — yet.** [docs/schema.md](docs/schema.md) is the source of truth; the CLI should eventually check `Z_METADATA.Z_VERSION` against a known-compatible list (TODO).
 6. **No third-party deps beyond Apple's.** Only `swift-argument-parser` and the system `sqlite3`. Adding a dep needs an issue + discussion.

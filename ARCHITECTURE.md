@@ -105,67 +105,46 @@ Some columns are suffixed `ZENCRYPTED*` (e.g. `ZENCRYPTEDLATITUDE`, `ZENCRYPTEDL
 
 **Handling of encrypted entries is an open question** (see PROJECT_PLAN.md). For Phase 1 the CLI reads plaintext columns; encrypted entries may appear empty until we implement decryption (likely impossible from outside the app).
 
-## Write side (Phase 2 → Phase 3)
+## Write side — CoreData through the app's own model
 
-Everlog's Shortcuts actions are the supported write path. Direct SQLite mutations would (a) bypass Wonderbit's CloudKit sync logic and (b) risk CoreData consistency rules.
+Writes never touch the SQLite directly — that would bypass Wonderbit's CloudKit
+sync and CoreData's consistency rules. Instead the CLI does exactly what
+Everlog's own widget and share-extension processes do:
 
-Observed Shortcuts actions in Shortcuts.app (search for "Everlog" or "Journal"):
+1. **Load the app's compiled model**: `Hummingbird.momd` from
+   `/Applications/Everlog.app/Contents/Resources/` (override: `EVERLOG_APP`).
+   Using the app's own model means schema compatibility by construction —
+   entity hashes match the store because the store was written by this model.
+2. **Open both stores with the model's configurations** — `Main` →
+   `Hummingbird.sqlite`, `AttachmentData` → `AttachmentData.sqlite` — with
+   `NSPersistentHistoryTrackingKey: true` and auto-migration disabled. If the
+   installed app's model doesn't match the store (mid-update), the CLI refuses
+   to write rather than migrating; launching Everlog once fixes that.
+3. **Insert via KVC** (`NSManagedObject` — the model's `Everlog.*` classes
+   aren't linked into our process, so CoreData falls back to base
+   `NSManagedObject`, which is exactly what we want).
+4. **Save with `transactionAuthor = "everlog-cli"`.** The save is recorded in
+   the store's persistent-history tables (`ATRANSACTION`/`ACHANGE`); Everlog's
+   `NSPersistentCloudKitContainer` mirror exports our transactions to iCloud
+   the same way it exports the app's own.
 
-| Action | Use |
-|---|---|
-| `Create Entry` | Create a new entry. Inputs: text, journal, tags, attachments, date, location. |
-| `Update Journal` | Modify journal metadata. |
-| `Delete Journal Entries` | Bulk delete. |
-| `Create Journal` | Create a new top-level journal. |
-| `Get Journal` | Fetch journal metadata. |
-| `Find Entries` | Filter entries by date/journal/tag. |
-| `Search Entries` | Full-text search. |
-| `Open Entry` | Open one entry in the Everlog UI. |
-| `Open Bookmarks` | Open bookmarks view. |
-| `Open Tag` | Open a tag view. |
-| `Open On This Day` | Open the On This Day view. |
-| `Set Bookmark of Entry` | Toggle bookmark. |
-| `Set Everlog Focus Filter` | Restrict app view. |
-| `Add Comment to Entry` | Add a comment thread. |
-| `Append Text to Entry` | Append text to an existing entry. |
-| `Write Entry` | (Possibly duplicate of `Create Entry` — needs decode.) |
-| `Record Audio` | Record audio attachment. |
+Multi-process safety comes from SQLite WAL + CoreData history tracking — the
+same guarantees that let the widget write while the app runs. Writing while
+Everlog.app is open is supported and tested.
 
-These are AppIntent-backed (`co.wonderbit.Hummingbird.*Intent` action identifiers).
+See [docs/write-path.md](docs/write-path.md) for derived-field semantics
+(date buckets, word counts, attachment identifiers) and the failed
+Shortcuts/AppIntents approaches that preceded this design.
 
-### Phase 2: ship helper shortcuts that wrap Everlog's actions
+### Safety rails
 
-To avoid building complete plists from CLI code on every write call, the CLI bundles pre-authored helper Shortcuts that take JSON input and call the underlying Everlog actions:
-
-| Helper | Wraps | Input shape |
-|---|---|---|
-| `Everlog CLI: New Entry` | Create Entry | `{"journal": "Mindset", "text": "...", "tags": ["wins"], "date": "...", "lat": ..., "lng": ...}` |
-| `Everlog CLI: Append` | Append Text to Entry | `{"identifier": "ABCD-...", "text": "..."}` |
-| `Everlog CLI: Find` | Find Entries | `{"journal": "Mindset", "tag": "wins", "limit": 20}` → identifiers |
-| `Everlog CLI: Bookmark` | Set Bookmark of Entry | `{"identifier": "ABCD-...", "on": true}` |
-
-First-run `everlog install-shortcuts` writes the bundled `.shortcut` files to a temp path and opens them, prompting the user to import.
-
-### Phase 3: skip the helper layer with direct AppIntents
-
-Apple's `AppIntents` framework allows a third-party process to invoke another app's `AppIntent` types, given:
-
-1. The target intent is declared as an `AppIntent` (not `OpenIntent`, which requires foreground UI).
-2. The calling process has the appropriate entitlements (likely something like `com.apple.developer.intents` or per-bundle-id permission).
-3. The user has granted the relevant Privacy permission via a TCC prompt the first time.
-
-If feasible (Wonderbit's intents may be `OpenIntent`-only, in which case we stay on the shortcuts CLI), Phase 3 replaces the helper-shortcut subprocess with direct framework calls:
-
-```swift
-import AppIntents
-
-let intent = AnyIntent(identifier: "co.wonderbit.Hummingbird.CreateEntryIntent")
-intent["text"] = "..."
-intent["journal"] = "Mindset"
-let result = try await intent.perform()
-```
-
-(Exact API TBD — the dynamic AppIntent invocation API is sparsely documented.)
+- Timestamped backup of both stores (sqlite + WAL + SHM) to
+  `~/.everlog-cli/backups/<stamp>/` before every write session; newest five
+  kept. Override the location with `EVERLOG_BACKUP_DIR`.
+- `EVERLOG_STORE` / `EVERLOG_ATTACH_STORE` point the whole write layer at
+  copies — the test suite uses this so it never touches the real store.
+- Trash is a soft delete (`isTrashed` + `dateTrashed`), recoverable in-app,
+  matching the app's own behaviour.
 
 ## Package layout
 
