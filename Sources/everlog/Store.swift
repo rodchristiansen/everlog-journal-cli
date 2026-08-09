@@ -1,5 +1,7 @@
 import CoreData
 import Foundation
+import ImageIO
+import UniformTypeIdentifiers
 
 /// Write-side access to the Hummingbird store via CoreData.
 ///
@@ -29,12 +31,23 @@ enum Store {
             .appendingPathComponent("Library/Group Containers/group.hummingbird/Hummingbird.sqlite")
     }
 
+    /// Attachment-blob store (model configuration "AttachmentData"). Defaults
+    /// to AttachmentData.sqlite next to the main store; override with
+    /// EVERLOG_ATTACH_STORE.
+    static var attachmentStoreURL: URL {
+        if let override = ProcessInfo.processInfo.environment["EVERLOG_ATTACH_STORE"] {
+            return URL(fileURLWithPath: override)
+        }
+        return storeURL.deletingLastPathComponent().appendingPathComponent("AttachmentData.sqlite")
+    }
+
     enum StoreError: LocalizedError {
         case modelNotFound(String)
         case incompatibleStore
         case journalNotFound(String)
         case entryNotFound(String)
         case ambiguousEntry(String, Int)
+        case notAnImage(String)
 
         var errorDescription: String? {
             switch self {
@@ -48,6 +61,8 @@ enum Store {
                 return "No entry matches identifier: \(id)"
             case .ambiguousEntry(let id, let count):
                 return "Identifier prefix \(id) matches \(count) entries — use more characters."
+            case .notAnImage(let path):
+                return "Not a readable image file: \(path)"
             }
         }
     }
@@ -62,24 +77,28 @@ enum Store {
         return model
     }
 
-    /// Open the store read-write with history tracking. Refuses to open a
-    /// store the bundled model can't represent (never auto-migrate — that is
-    /// the app's job).
+    /// Open both stores read-write with history tracking, mirroring the app's
+    /// own two-store container: "Main" → Hummingbird.sqlite, "AttachmentData"
+    /// → AttachmentData.sqlite. Refuses to open a store the bundled model
+    /// can't represent (never auto-migrate — that is the app's job).
     static func openContext() throws -> NSManagedObjectContext {
         let model = try loadModel()
-
-        let meta = try NSPersistentStoreCoordinator.metadataForPersistentStore(
-            type: .sqlite, at: storeURL, options: [NSReadOnlyPersistentStoreOption: true])
-        guard model.isConfiguration(withName: nil, compatibleWithStoreMetadata: meta) else {
-            throw StoreError.incompatibleStore
-        }
-
-        let psc = NSPersistentStoreCoordinator(managedObjectModel: model)
-        _ = try psc.addPersistentStore(type: .sqlite, at: storeURL, options: [
+        let options: [String: Any] = [
             NSPersistentHistoryTrackingKey: true,
             NSMigratePersistentStoresAutomaticallyOption: false,
             NSInferMappingModelAutomaticallyOption: false,
-        ])
+        ]
+
+        let psc = NSPersistentStoreCoordinator(managedObjectModel: model)
+        for (config, url) in [("Main", storeURL), ("AttachmentData", attachmentStoreURL)] {
+            let meta = try NSPersistentStoreCoordinator.metadataForPersistentStore(
+                type: .sqlite, at: url, options: [NSReadOnlyPersistentStoreOption: true])
+            guard model.isConfiguration(withName: config, compatibleWithStoreMetadata: meta) else {
+                throw StoreError.incompatibleStore
+            }
+            _ = try psc.addPersistentStore(
+                type: .sqlite, configuration: config, at: url, options: options)
+        }
 
         let ctx = NSManagedObjectContext(concurrencyType: .mainQueueConcurrencyType)
         ctx.persistentStoreCoordinator = psc
@@ -102,10 +121,12 @@ enum Store {
         let dir = root.appendingPathComponent(stampFormatter.string(from: Date()))
         try fm.createDirectory(at: dir, withIntermediateDirectories: true)
 
-        for ext in ["", "-wal", "-shm"] {
-            let src = URL(fileURLWithPath: storeURL.path + ext)
-            guard fm.fileExists(atPath: src.path) else { continue }
-            try fm.copyItem(at: src, to: dir.appendingPathComponent(src.lastPathComponent))
+        for base in [storeURL, attachmentStoreURL] {
+            for ext in ["", "-wal", "-shm"] {
+                let src = URL(fileURLWithPath: base.path + ext)
+                guard fm.fileExists(atPath: src.path) else { continue }
+                try fm.copyItem(at: src, to: dir.appendingPathComponent(src.lastPathComponent))
+            }
         }
 
         // prune
@@ -174,6 +195,73 @@ enum Store {
         entry.setValue(TimeZone.current.secondsFromGMT(for: date) / 60, forKey: "timeZone")
     }
 
+    // MARK: - Image attachments
+
+    /// Read an image file, create the ImageAttachment (main store) and its
+    /// AttachmentData blob row (attachment store — CoreData routes it by
+    /// model configuration and externalizes the binary), and link it to the
+    /// entry. Returns the markdown reference the app embeds in entry text.
+    static func addImage(
+        _ ctx: NSManagedObjectContext,
+        entry: NSManagedObject,
+        fileURL: URL,
+        order: Int
+    ) throws -> String {
+        let data = try Data(contentsOf: fileURL)
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+              CGImageSourceGetCount(source) > 0 else {
+            throw StoreError.notAnImage(fileURL.path)
+        }
+        let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any] ?? [:]
+        let width = props[kCGImagePropertyPixelWidth] as? Double ?? 0
+        let height = props[kCGImagePropertyPixelHeight] as? Double ?? 0
+
+        // Thumbnail the way the app stores one (small JPEG, longest edge 400px).
+        var thumbnail: Data?
+        let thumbOptions: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceThumbnailMaxPixelSize: 400,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+        ]
+        if let cgThumb = CGImageSourceCreateThumbnailAtIndex(source, 0, thumbOptions as CFDictionary) {
+            let out = NSMutableData()
+            if let dest = CGImageDestinationCreateWithData(out, UTType.jpeg.identifier as CFString, 1, nil) {
+                CGImageDestinationAddImage(dest, cgThumb, nil)
+                if CGImageDestinationFinalize(dest) { thumbnail = out as Data }
+            }
+        }
+
+        // Identifier format matches app rows: uppercase UUID hex, no dashes.
+        let identifier = UUID().uuidString.replacingOccurrences(of: "-", with: "")
+        let now = Date()
+
+        let attachment = NSEntityDescription.insertNewObject(forEntityName: "ImageAttachment", into: ctx)
+        attachment.setValue(identifier, forKey: "identifier")
+        attachment.setValue(now, forKey: "date")
+        attachment.setValue(now, forKey: "dateCreated")
+        attachment.setValue(false, forKey: "inline")
+        attachment.setValue(order, forKey: "order")
+        attachment.setValue(0, forKey: "type")
+        attachment.setValue(0, forKey: "source")
+        attachment.setValue(0, forKey: "app")
+        attachment.setValue("", forKey: "title")
+        attachment.setValue(fileURL.pathExtension.lowercased(), forKey: "fileExtension")
+        attachment.setValue(width, forKey: "width")
+        attachment.setValue(height, forKey: "height")
+        attachment.setValue(data.count, forKey: "size")
+        if let thumbnail { attachment.setValue(thumbnail, forKey: "thumbnail") }
+        attachment.setValue(entry, forKey: "entry")
+
+        let blob = NSEntityDescription.insertNewObject(forEntityName: "AttachmentData", into: ctx)
+        blob.setValue(identifier, forKey: "identifier")
+        blob.setValue(data, forKey: "data")
+        blob.setValue(now, forKey: "dateCreated")
+        blob.setValue(now, forKey: "dateModified")
+        blob.setValue(now, forKey: "dateAccessed")
+
+        return "![attachment](\(identifier))"
+    }
+
     // MARK: - Write operations
 
     struct CreatedEntry: Codable {
@@ -181,6 +269,7 @@ enum Store {
         let date: Date
         let journal: String
         let wordCount: Int
+        let images: Int
     }
 
     static func createEntry(
@@ -188,7 +277,8 @@ enum Store {
         journalName: String,
         date: Date = Date(),
         tags: [String] = [],
-        bookmarked: Bool = false
+        bookmarked: Bool = false,
+        imagePaths: [String] = []
     ) throws -> CreatedEntry {
         try backup()
         let ctx = try openContext()
@@ -196,7 +286,14 @@ enum Store {
 
         let now = Date()
         let entry = NSEntityDescription.insertNewObject(forEntityName: "Entry", into: ctx)
-        applyDerivedFields(entry, body: body, date: date)
+
+        var fullBody = body
+        for (index, path) in imagePaths.enumerated() {
+            let url = URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
+            let markdown = try addImage(ctx, entry: entry, fileURL: url, order: index)
+            fullBody += "\n\(markdown)"
+        }
+        applyDerivedFields(entry, body: fullBody, date: date)
         entry.setValue(now, forKey: "dateCreated")
         entry.setValue(now, forKey: "dateModified")
         entry.setValue(now, forKey: "textModifiedDate")
@@ -221,7 +318,8 @@ enum Store {
             identifier: entry.value(forKey: "identifier") as! String,
             date: date,
             journal: journalName,
-            wordCount: entry.value(forKey: "wordCount") as! Int
+            wordCount: entry.value(forKey: "wordCount") as! Int,
+            images: imagePaths.count
         )
     }
 
@@ -233,6 +331,26 @@ enum Store {
         let combined = existing.isEmpty ? text : existing + "\n" + text
         let date = entry.value(forKey: "date") as? Date ?? Date()
         applyDerivedFields(entry, body: combined, date: date)
+        entry.setValue(Date(), forKey: "dateModified")
+        entry.setValue(Date(), forKey: "textModifiedDate")
+        try ctx.save()
+        return entry.value(forKey: "identifier") as! String
+    }
+
+    static func attachImages(identifierPrefix: String, paths: [String]) throws -> String {
+        try backup()
+        let ctx = try openContext()
+        let entry = try Store.entry(ctx, identifierPrefix: identifierPrefix)
+        let existingCount = (entry.value(forKey: "attachments") as? Set<NSManagedObject>)?.count ?? 0
+
+        var body = entry.value(forKey: "text") as? String ?? ""
+        for (index, path) in paths.enumerated() {
+            let url = URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
+            let markdown = try addImage(ctx, entry: entry, fileURL: url, order: existingCount + index)
+            body += "\n\(markdown)"
+        }
+        let date = entry.value(forKey: "date") as? Date ?? Date()
+        applyDerivedFields(entry, body: body, date: date)
         entry.setValue(Date(), forKey: "dateModified")
         entry.setValue(Date(), forKey: "textModifiedDate")
         try ctx.save()

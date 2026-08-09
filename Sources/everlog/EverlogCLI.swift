@@ -30,6 +30,7 @@ struct EverlogCLI: ParsableCommand {
             Watch.self,
             New.self,
             Append.self,
+            Attach.self,
             Trash.self,
             ExportCmd.self,
         ],

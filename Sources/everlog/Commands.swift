@@ -268,6 +268,9 @@ struct New: ParsableCommand {
     @Flag(name: .long, help: "Bookmark the entry.")
     var bookmark = false
 
+    @Option(name: [.customShort("i"), .customLong("image")], help: "Image file to attach (repeatable).")
+    var images: [String] = []
+
     @Flag(name: .long, help: "Emit the created entry as JSON.")
     var json = false
 
@@ -298,12 +301,13 @@ struct New: ParsableCommand {
 
         let created = try Store.createEntry(
             body: body, journalName: journal, date: entryDate,
-            tags: tags, bookmarked: bookmark)
+            tags: tags, bookmarked: bookmark, imagePaths: images)
 
         if json {
             Output.emitJSON(created)
         } else {
-            print("Created \(created.identifier.prefix(8)) in \(created.journal) (\(created.wordCount) words)")
+            let suffix = created.images > 0 ? ", \(created.images) image\(created.images == 1 ? "" : "s")" : ""
+            print("Created \(created.identifier.prefix(8)) in \(created.journal) (\(created.wordCount) words\(suffix))")
         }
     }
 
@@ -317,6 +321,25 @@ struct New: ParsableCommand {
             if let d = f.date(from: s) { return d }
         }
         return ISO8601DateFormatter().date(from: s)
+    }
+}
+
+struct Attach: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "attach",
+        abstract: "Attach image files to an existing entry."
+    )
+
+    @Argument(help: "Entry identifier or unique prefix.")
+    var identifier: String
+
+    @Argument(help: "Image file path(s).")
+    var paths: [String]
+
+    func run() throws {
+        guard !paths.isEmpty else { throw ValidationError("No image paths given.") }
+        let id = try Store.attachImages(identifierPrefix: identifier, paths: paths)
+        print("Attached \(paths.count) image\(paths.count == 1 ? "" : "s") to \(id.prefix(8))")
     }
 }
 
