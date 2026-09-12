@@ -32,6 +32,8 @@ struct EverlogCLI: ParsableCommand {
             Append.self,
             Attach.self,
             Bookmark.self,
+            Place.self,
+            WeatherCmd.self,
             Trash.self,
             ExportCmd.self,
         ],

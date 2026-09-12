@@ -29,7 +29,7 @@ Every subcommand accepts `--json` for machine-readable output.
 | Phase | Feature | Status |
 |---|---|---|
 | **1. Read MVP** | journals · tags · show · search · read · on-this-day · random · `--json` everywhere | ✅ |
-| **2. Writes** | `new` (journal, title, date, tags, bookmark, stdin) · `append` · `attach` · `bookmark` · `trash` — headless CoreData, no Shortcuts | ✅ |
+| **2. Writes** | `new` (journal, title, date, tags, bookmark, stdin) · `append` · `attach` · `bookmark` · `place` · `weather` · `trash` — headless CoreData, no Shortcuts | ✅ |
 | **3. Image attachments** | `-i/--image` on `new`, `attach` for existing entries; blobs land in the AttachmentData store with thumbnails | ✅ |
 | **4. Statistics** | `everlog stats` — word counts, streaks, frequency by tag/journal; date-range filters | ⬜ |
 | **5. Export** | `everlog export --format markdown`; JSON | ✅ |
@@ -47,6 +47,8 @@ everlog new "Sunset at the seawall" -j Leisure -i sunset.jpg -i seawall.jpg
 everlog append 8556DCCA "One more thought before bed."
 everlog attach 8556DCCA screenshot.png
 everlog bookmark 8556DCCA
+everlog place 8556DCCA "Vancouver BC" --lat 49.2827 --lng=-123.1207 --locality Vancouver
+everlog weather 8556DCCA --fahrenheit 61 --condition "Mostly Cloudy" --symbol cloud.sun
 everlog bookmark 8556DCCA 4B006A86 --off
 everlog trash 8556DCCA
 ```

@@ -220,11 +220,14 @@ enum Store {
         let width = props[kCGImagePropertyPixelWidth] as? Double ?? 0
         let height = props[kCGImagePropertyPixelHeight] as? Double ?? 0
 
-        // Thumbnail the way the app stores one (small JPEG, longest edge 400px).
+        // The app's own thumbnails are 400px, which is fine for a list row and far too
+        // soft for the body, where the image is shown large. Since an inline attachment
+        // is displayed from this data, 400px is the whole reason attached screenshots
+        // came out unreadable.
         var thumbnail: Data?
         let thumbOptions: [CFString: Any] = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
-            kCGImageSourceThumbnailMaxPixelSize: 400,
+            kCGImageSourceThumbnailMaxPixelSize: 2048,
             kCGImageSourceCreateThumbnailWithTransform: true,
         ]
         if let cgThumb = CGImageSourceCreateThumbnailAtIndex(source, 0, thumbOptions as CFDictionary) {
@@ -243,7 +246,10 @@ enum Store {
         attachment.setValue(identifier, forKey: "identifier")
         attachment.setValue(now, forKey: "date")
         attachment.setValue(now, forKey: "dateCreated")
-        attachment.setValue(false, forKey: "inline")
+        // Inline puts the image where the markdown reference sits in the body. Left
+        // false, the app also renders a small thumbnail strip above the entry, so every
+        // attached image appeared twice — once tiny at the top, once in the text.
+        attachment.setValue(true, forKey: "inline")
         attachment.setValue(order, forKey: "order")
         attachment.setValue(0, forKey: "type")
         attachment.setValue(0, forKey: "source")
@@ -264,6 +270,52 @@ enum Store {
         blob.setValue(now, forKey: "dateAccessed")
 
         return "![attachment](\(identifier))"
+    }
+
+
+    // MARK: - Entry metadata
+
+    /// Attach a place to an entry, creating the Place row the app would.
+    static func setPlace(identifierPrefix: String, name: String, lat: Double?, lng: Double?,
+                         locality: String?, area: String?, country: String?) throws -> String {
+        try backup()
+        let ctx = try openContext()
+        let entry = try Store.entry(ctx, identifierPrefix: identifierPrefix)
+        let place = NSEntityDescription.insertNewObject(forEntityName: "Place", into: ctx)
+        place.setValue(UUID().uuidString, forKey: "identifier")
+        place.setValue(Date(), forKey: "dateCreated")
+        place.setValue(1, forKey: "app")
+        place.setValue(name, forKey: "name")
+        place.setValue(name, forKey: "customName")
+        if let lat { place.setValue(lat, forKey: "latitude") }
+        if let lng { place.setValue(lng, forKey: "longitude") }
+        if let locality { place.setValue(locality, forKey: "locality") }
+        if let area { place.setValue(area, forKey: "administrativeArea") }
+        if let country { place.setValue(country, forKey: "country") }
+        entry.setValue(place, forKey: "place")
+        entry.setValue(Date(), forKey: "dateModified")
+        try ctx.save()
+        return entry.value(forKey: "identifier") as! String
+    }
+
+    /// Attach weather to an entry. Temperature is Celsius, the unit the store keeps.
+    static func setWeather(identifierPrefix: String, temperature: Double?, condition: String?,
+                           symbol: String?, humidity: Double?, windSpeed: Double?) throws -> String {
+        try backup()
+        let ctx = try openContext()
+        let entry = try Store.entry(ctx, identifierPrefix: identifierPrefix)
+        let w = NSEntityDescription.insertNewObject(forEntityName: "Weather", into: ctx)
+        w.setValue(1, forKey: "app")
+        w.setValue(entry.value(forKey: "date") as? Date ?? Date(), forKey: "date")
+        if let temperature { w.setValue(temperature, forKey: "temperature") }
+        if let condition { w.setValue(condition, forKey: "condition") }
+        if let symbol { w.setValue(symbol, forKey: "symbolName") }
+        if let humidity { w.setValue(humidity, forKey: "humidity") }
+        if let windSpeed { w.setValue(windSpeed, forKey: "windSpeed") }
+        w.setValue(entry, forKey: "entry")
+        entry.setValue(Date(), forKey: "dateModified")
+        try ctx.save()
+        return entry.value(forKey: "identifier") as! String
     }
 
     // MARK: - Write operations
