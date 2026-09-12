@@ -361,6 +361,22 @@ enum Store {
         return entry.value(forKey: "identifier") as! String
     }
 
+    /// Set or clear an entry's bookmark.
+    ///
+    /// Bookmarking is the one piece of Everlog's own curation that had no headless
+    /// path: `new --bookmark` could set it at write time and nothing could change it
+    /// afterwards, which makes a bulk re-read of an existing journal impossible to
+    /// act on. Returns the identifier and the state it ended in.
+    static func setBookmark(identifierPrefix: String, bookmarked: Bool) throws -> (String, Bool) {
+        try backup()
+        let ctx = try openContext()
+        let entry = try Store.entry(ctx, identifierPrefix: identifierPrefix)
+        entry.setValue(bookmarked, forKey: "isBookmarked")
+        entry.setValue(Date(), forKey: "dateModified")
+        try ctx.save()
+        return (entry.value(forKey: "identifier") as! String, bookmarked)
+    }
+
     static func trashEntry(identifierPrefix: String) throws -> String {
         try backup()
         let ctx = try openContext()
