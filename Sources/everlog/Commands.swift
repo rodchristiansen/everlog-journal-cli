@@ -383,6 +383,69 @@ struct Bookmark: ParsableCommand {
     }
 }
 
+struct Place: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "place",
+        abstract: "Set an entry's location.",
+        discussion: """
+        Everlog records where an entry happened, and until now only the app could \
+        say so. An entry written from a screenshot that names the place — a workout \
+        summary saying Vancouver BC — can carry it too.
+        """
+    )
+
+    @Argument(help: "Entry identifier or unique prefix.")
+    var identifier: String
+
+    @Argument(help: "Place name, as it should read in the app.")
+    var name: String
+
+    @Option(name: .long) var lat: Double?
+    @Option(name: .long) var lng: Double?
+    @Option(name: .long, help: "City or town.") var locality: String?
+    @Option(name: .long, help: "State or province.") var area: String?
+    @Option(name: .long) var country: String?
+
+    func run() throws {
+        let id = try Store.setPlace(identifierPrefix: identifier, name: name, lat: lat, lng: lng,
+                                    locality: locality, area: area, country: country)
+        print("Placed \(id.prefix(8)) at \(name)")
+    }
+}
+
+struct WeatherCmd: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "weather",
+        abstract: "Set an entry's weather.",
+        discussion: """
+        Temperature is Celsius, which is what the store keeps; pass --fahrenheit to \
+        give it in F and have it converted. Screenshots of workout summaries carry \
+        the weather on their face, so an entry built from one can record what the \
+        day was actually like.
+        """
+    )
+
+    @Argument(help: "Entry identifier or unique prefix.")
+    var identifier: String
+
+    @Option(name: .long, help: "Temperature in Celsius.") var temp: Double?
+    @Option(name: .long, help: "Temperature in Fahrenheit; converted.") var fahrenheit: Double?
+    @Option(name: .long, help: "Condition, e.g. \"Mostly Cloudy\".") var condition: String?
+    @Option(name: .long, help: "SF Symbol the app draws, e.g. cloud.sun.") var symbol: String?
+    @Option(name: .long, help: "Relative humidity, 0-1.") var humidity: Double?
+    @Option(name: .long, help: "Wind speed in km/h.") var wind: Double?
+
+    func run() throws {
+        var c = temp
+        if let f = fahrenheit { c = (f - 32) * 5 / 9 }
+        let id = try Store.setWeather(identifierPrefix: identifier, temperature: c,
+                                      condition: condition, symbol: symbol,
+                                      humidity: humidity, windSpeed: wind)
+        let said = c.map { String(format: "%.1f°C", $0) } ?? "weather"
+        print("Set \(said) on \(id.prefix(8))")
+    }
+}
+
 struct Trash: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "trash",
