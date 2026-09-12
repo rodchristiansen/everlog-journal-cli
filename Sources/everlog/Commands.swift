@@ -343,6 +343,46 @@ struct Attach: ParsableCommand {
     }
 }
 
+struct Bookmark: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "bookmark",
+        abstract: "Bookmark an existing entry, or clear it with --off.",
+        discussion: """
+        `new --bookmark` can only mark an entry as it is written. This marks one that \
+        already exists, which is what a pass back over an existing journal needs: \
+        reading years of entries and flagging the ones that turn out to matter is a \
+        judgement made long after the writing.
+
+        Takes one or more identifiers, so a whole sweep can be applied in one call.
+        """
+    )
+
+    @Argument(help: "Entry identifiers or unique prefixes (from `everlog show --json`).")
+    var identifiers: [String]
+
+    @Flag(name: .long, help: "Remove the bookmark instead of setting it.")
+    var off = false
+
+    @Flag(name: .long, help: "Emit the result as JSON.")
+    var json = false
+
+    func run() throws {
+        var done: [(String, Bool)] = []
+        for id in identifiers {
+            done.append(try Store.setBookmark(identifierPrefix: id, bookmarked: !off))
+        }
+        if json {
+            let rows = done.map { ["identifier": $0.0, "bookmarked": String($0.1)] }
+            let data = try JSONSerialization.data(withJSONObject: rows, options: [.prettyPrinted])
+            print(String(data: data, encoding: .utf8) ?? "[]")
+        } else {
+            for (id, state) in done {
+                print("\(state ? "Bookmarked" : "Unbookmarked") \(id.prefix(8))")
+            }
+        }
+    }
+}
+
 struct Trash: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "trash",
