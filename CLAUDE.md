@@ -136,7 +136,7 @@ datetime(e.ZDATE + 978307200, 'unixepoch')
 ## Related repos
 
 - `~/Developer/Personal` — Rod's personal life-system repo. Has its own `bin/everlog` (predates this) that this OSS project will eventually supersede. Don't modify it from here.
-- `~/Documents/Create/Setup/cmux/workspace-set.yaml` — has a workspace entry pointing here under "GitHub Tools" section.
+- `~/Developer/Setup/cmux/workspace-set.*.yaml` partials — have a workspace entry pointing here under "GitHub Tools" section.
 
 ## What's NOT in scope
 
