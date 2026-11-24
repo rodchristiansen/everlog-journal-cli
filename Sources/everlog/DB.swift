@@ -181,11 +181,47 @@ extension DB {
         return out
     }
 
+    // MARK: - Entry ↔ tag join table
+
+    /// Core Data names the many-to-many table and its columns after entity numbers
+    /// (`Z_17TAGS`, `Z_17ENTRIES1`, `Z_22TAGS`), and those numbers shift whenever an
+    /// Everlog update adds an entity. Hardcoding them broke every tag query the day
+    /// Tag moved from 22 to 25, so read them from the store each time instead.
+    struct TagJoin {
+        let table: String
+        let entry: String
+        let tag: String
+    }
+
+    static func tagJoin(_ db: OpaquePointer) throws -> TagJoin {
+        func ent(_ name: String) throws -> Int64 {
+            let stmt = try Statement(db, "SELECT Z_ENT FROM Z_PRIMARYKEY WHERE Z_NAME = ?1").bind(1, name)
+            guard stmt.step() else { throw DBError.prepareFailed("no \(name) entity in Z_PRIMARYKEY") }
+            return stmt.int(0)
+        }
+        let entry = try ent("Entry")
+        let tag = try ent("Tag")
+        let table = "Z_\(entry)TAGS"
+        let cols = try Statement(db, "SELECT name FROM pragma_table_info(?1)").bind(1, table)
+        var entryCol: String?
+        var tagCol: String?
+        while cols.step() {
+            guard let name = cols.text(0) else { continue }
+            if name.hasPrefix("Z_\(entry)ENTRIES") { entryCol = name }
+            if name == "Z_\(tag)TAGS" { tagCol = name }
+        }
+        guard let e = entryCol, let t = tagCol else {
+            throw DBError.prepareFailed("unexpected columns in \(table)")
+        }
+        return TagJoin(table: table, entry: e, tag: t)
+    }
+
     static func listTags(_ db: OpaquePointer) throws -> [Tag] {
+        let tj = try tagJoin(db)
         let sql = """
-        SELECT t.ZTITLE, COUNT(j.Z_17ENTRIES1)
+        SELECT t.ZTITLE, COUNT(j.\(tj.entry))
         FROM ZTAG t
-        LEFT JOIN Z_17TAGS j ON j.Z_22TAGS = t.Z_PK
+        LEFT JOIN \(tj.table) j ON j.\(tj.tag) = t.Z_PK
         GROUP BY t.ZTITLE
         ORDER BY 2 DESC
         """
@@ -227,8 +263,9 @@ extension DB {
         var queryBind: Int32 = 0
         var journalBind: Int32 = 0
         if tag != nil {
-            sql += " JOIN Z_17TAGS jt ON jt.Z_17ENTRIES1 = e.Z_PK"
-            sql += " JOIN ZTAG t ON t.Z_PK = jt.Z_22TAGS AND t.ZTITLE = ?\(bindIdx)"
+            let tj = try tagJoin(db)
+            sql += " JOIN \(tj.table) jt ON jt.\(tj.entry) = e.Z_PK"
+            sql += " JOIN ZTAG t ON t.Z_PK = jt.\(tj.tag) AND t.ZTITLE = ?\(bindIdx)"
             tagBind = bindIdx
             bindIdx += 1
         }
@@ -273,11 +310,12 @@ extension DB {
         let bookmarked = stmt.int(7) == 1
 
         // Load tags
+        let tj = try tagJoin(db)
         let tagSql = """
         SELECT t.ZTITLE
-        FROM Z_17TAGS j
-        JOIN ZTAG t ON t.Z_PK = j.Z_22TAGS
-        JOIN ZENTRY e ON e.Z_PK = j.Z_17ENTRIES1
+        FROM \(tj.table) j
+        JOIN ZTAG t ON t.Z_PK = j.\(tj.tag)
+        JOIN ZENTRY e ON e.Z_PK = j.\(tj.entry)
         WHERE e.ZIDENTIFIER = ?1
         """
         let tagStmt = try Statement(db, tagSql).bind(1, ident)
@@ -365,11 +403,12 @@ extension DB {
         }
 
         // Bulk-load tags per entry (one query, then group)
+        let tj = try tagJoin(db)
         let tagSql = """
         SELECT e.ZIDENTIFIER, t.ZTITLE
-        FROM Z_17TAGS j
-        JOIN ZTAG t ON t.Z_PK = j.Z_22TAGS
-        JOIN ZENTRY e ON e.Z_PK = j.Z_17ENTRIES1
+        FROM \(tj.table) j
+        JOIN ZTAG t ON t.Z_PK = j.\(tj.tag)
+        JOIN ZENTRY e ON e.Z_PK = j.\(tj.entry)
         """
         let tagStmt = try Statement(db, tagSql)
         var tagsByEntry: [String: [String]] = [:]
